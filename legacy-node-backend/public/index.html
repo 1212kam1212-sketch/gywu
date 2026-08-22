@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Overload</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Overload</h1>
+  <div id="today-label" class="today-label"></div>
+</header>
+
+<main id="views">
+
+  <!-- LOG WORKOUT -->
+  <section id="view-log" class="view active">
+    <div class="card">
+      <label class="field-label" for="exercise-select">Exercise</label>
+      <select id="exercise-select"></select>
+      <button id="add-exercise-btn" class="link-btn" type="button">+ Add custom exercise</button>
+    </div>
+
+    <div id="add-exercise-form" class="card hidden">
+      <label class="field-label" for="new-ex-name">Name</label>
+      <input id="new-ex-name" type="text" placeholder="e.g. Cable Fly" />
+      <label class="field-label" for="new-ex-group">Muscle group</label>
+      <select id="new-ex-group">
+        <option>Chest</option>
+        <option>Back</option>
+        <option>Legs</option>
+        <option>Shoulders</option>
+        <option>Arms</option>
+        <option>Core</option>
+      </select>
+      <div class="row-buttons">
+        <button id="save-new-exercise" type="button">Save exercise</button>
+        <button id="cancel-new-exercise" type="button" class="secondary">Cancel</button>
+      </div>
+    </div>
+
+    <div id="last-time-card" class="card hidden">
+      <div class="card-title">Last time (<span id="last-time-date"></span>)</div>
+      <div id="last-time-sets" class="set-chips"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Log a set</div>
+      <div class="set-input-row">
+        <div class="input-group">
+          <label for="input-weight">Weight</label>
+          <input id="input-weight" type="number" inputmode="decimal" step="0.5" min="0" />
+        </div>
+        <div class="input-group">
+          <label for="input-reps">Reps</label>
+          <input id="input-reps" type="number" inputmode="numeric" min="1" />
+        </div>
+        <div class="input-group">
+          <label for="input-rir">RIR</label>
+          <select id="input-rir">
+            <option value="">--</option>
+            <option>0</option>
+            <option>1</option>
+            <option>2</option>
+            <option>3</option>
+            <option>4</option>
+            <option>5</option>
+          </select>
+        </div>
+      </div>
+      <button id="add-set-btn" type="button" class="primary full-width">Add Set</button>
+      <div id="pr-banner" class="pr-banner hidden"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Today's session</div>
+      <div id="today-session"></div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="view">
+    <div class="card">
+      <label class="field-label" for="history-exercise-select">Exercise</label>
+      <select id="history-exercise-select"></select>
+    </div>
+    <div class="card">
+      <div class="card-title">Top set weight &amp; est. 1RM over time</div>
+      <canvas id="history-chart" width="600" height="260"></canvas>
+      <div class="legend">
+        <span class="legend-item"><span class="swatch swatch-weight"></span>Top set weight</span>
+        <span class="legend-item"><span class="swatch swatch-e1rm"></span>Est. 1RM</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Session log</div>
+      <div id="history-table"></div>
+    </div>
+  </section>
+
+  <!-- PRS -->
+  <section id="view-prs" class="view">
+    <div class="card">
+      <div class="card-title">Personal records</div>
+      <div id="prs-list"></div>
+    </div>
+  </section>
+
+  <!-- VOLUME -->
+  <section id="view-volume" class="view">
+    <div class="card">
+      <div class="card-title">Weekly sets per muscle group</div>
+      <div id="volume-table"></div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-view="view-log">Log</button>
+  <button class="tab-btn" data-view="view-history">History</button>
+  <button class="tab-btn" data-view="view-prs">PRs</button>
+  <button class="tab-btn" data-view="view-volume">Volume</button>
+</nav>
+
+<script src="/app.js"></script>
+</body>
+</html>

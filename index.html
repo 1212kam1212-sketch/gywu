@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>GYWU</title>
+<meta name="description" content="GYWU - personal workout tracker" />
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0a0a0a" />
+
+<!-- iOS install support (Safari ignores manifest.json for icons/status bar) -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GYWU" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <h1>GYWU</h1>
+  <div id="today-label" class="today-label"></div>
+</header>
+
+<main id="views">
+
+  <!-- LOG WORKOUT -->
+  <section id="view-log" class="view active">
+
+    <!-- Rest timer: sticky at top of Log screen, always visible, never blocks inputs below -->
+    <div id="rest-timer-bar" class="rest-timer-bar">
+      <div id="rest-timer-presets" class="rest-timer-presets">
+        <span class="timer-label">Rest</span>
+        <button type="button" class="rest-preset-btn" data-secs="90">90s</button>
+        <button type="button" class="rest-preset-btn" data-secs="120">120s</button>
+        <button type="button" class="rest-preset-btn" data-secs="180">180s</button>
+        <input id="rest-timer-custom" type="number" min="5" max="900" placeholder="Custom" />
+        <button type="button" id="rest-timer-custom-start" class="secondary">Go</button>
+      </div>
+      <div id="rest-timer-active" class="rest-timer-active hidden">
+        <span id="rest-timer-display" class="rest-timer-display">00:00</span>
+        <div class="rest-timer-progress"><div id="rest-timer-progress-bar" class="rest-timer-progress-bar"></div></div>
+        <button type="button" id="rest-timer-cancel" class="rest-timer-cancel">✕</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label class="field-label" for="exercise-select">Exercise</label>
+      <select id="exercise-select"></select>
+      <button id="add-exercise-btn" class="link-btn" type="button">+ Add custom exercise</button>
+    </div>
+
+    <div id="add-exercise-form" class="card hidden">
+      <label class="field-label" for="new-ex-name">Name</label>
+      <input id="new-ex-name" type="text" placeholder="e.g. Cable Fly" />
+      <label class="field-label" for="new-ex-group">Muscle group</label>
+      <select id="new-ex-group">
+        <option>Chest</option>
+        <option>Back</option>
+        <option>Legs</option>
+        <option>Shoulders</option>
+        <option>Arms</option>
+        <option>Core</option>
+      </select>
+      <div class="row-buttons">
+        <button id="save-new-exercise" type="button" class="primary">Save exercise</button>
+        <button id="cancel-new-exercise" type="button" class="secondary">Cancel</button>
+      </div>
+    </div>
+
+    <div id="last-time-card" class="card hidden">
+      <div class="card-title">Last time (<span id="last-time-date"></span>)</div>
+      <div id="last-time-sets" class="set-chips"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Log a set</div>
+      <div class="set-input-row">
+        <div class="input-group">
+          <label for="input-weight">Weight</label>
+          <input id="input-weight" type="number" inputmode="decimal" step="0.5" min="0" />
+        </div>
+        <div class="input-group">
+          <label for="input-reps">Reps</label>
+          <input id="input-reps" type="number" inputmode="numeric" min="1" />
+        </div>
+        <div class="input-group">
+          <label for="input-rir">RIR</label>
+          <select id="input-rir">
+            <option value="">--</option>
+            <option>0</option>
+            <option>1</option>
+            <option>2</option>
+            <option>3</option>
+            <option>4</option>
+            <option>5</option>
+          </select>
+        </div>
+      </div>
+      <button id="add-set-btn" type="button" class="primary full-width">Add Set</button>
+      <div id="pr-banner" class="pr-banner hidden"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Session notes</div>
+      <textarea id="session-notes" placeholder="How did it feel? Anything to remember for next time..."></textarea>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Today's session</div>
+      <div id="today-session"></div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="view">
+    <div class="card">
+      <label class="field-label" for="history-exercise-select">Exercise</label>
+      <select id="history-exercise-select"></select>
+      <div class="range-presets" id="history-range-presets">
+        <button type="button" data-weeks="8">8wk</button>
+        <button type="button" data-weeks="12">12wk</button>
+        <button type="button" data-weeks="26">6mo</button>
+        <button type="button" data-weeks="52" class="active">1yr</button>
+        <button type="button" data-weeks="0">All</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Top set weight &amp; est. 1RM over time</div>
+      <canvas id="history-chart" width="600" height="260"></canvas>
+      <div class="legend">
+        <span class="legend-item"><span class="swatch swatch-weight"></span>Top set weight</span>
+        <span class="legend-item"><span class="swatch swatch-e1rm"></span>Est. 1RM</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Session log</div>
+      <div id="history-table" class="table-scroll"></div>
+    </div>
+  </section>
+
+  <!-- PRS -->
+  <section id="view-prs" class="view">
+    <div class="card">
+      <div class="card-title">Personal records</div>
+      <div id="prs-list"></div>
+    </div>
+  </section>
+
+  <!-- VOLUME -->
+  <section id="view-volume" class="view">
+    <div class="card">
+      <div class="card-title">Weekly sets per muscle group</div>
+      <div class="range-presets" id="volume-range-presets">
+        <button type="button" data-weeks="8" class="active">8wk</button>
+        <button type="button" data-weeks="12">12wk</button>
+        <button type="button" data-weeks="26">6mo</button>
+        <button type="button" data-weeks="52">1yr</button>
+      </div>
+      <div id="volume-table" class="table-scroll"></div>
+    </div>
+  </section>
+
+  <!-- BODY WEIGHT -->
+  <section id="view-bodyweight" class="view">
+    <div class="card">
+      <div class="card-title">Log body weight</div>
+      <div class="bw-input-row">
+        <div class="input-group">
+          <label for="bw-date">Date</label>
+          <input id="bw-date" type="date" />
+        </div>
+        <div class="input-group">
+          <label for="bw-weight">Weight</label>
+          <input id="bw-weight" type="number" inputmode="decimal" step="0.1" min="0" />
+        </div>
+      </div>
+      <button id="bw-save-btn" type="button" class="primary full-width">Save</button>
+    </div>
+    <div class="card">
+      <div class="card-title">Trend</div>
+      <canvas id="bw-chart" width="600" height="220"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-title">Log</div>
+      <div id="bw-table" class="table-scroll"></div>
+    </div>
+  </section>
+
+  <!-- EXPORT -->
+  <section id="view-export" class="view">
+    <div class="card">
+      <div class="card-title">Date range</div>
+      <div class="range-presets" id="export-range-presets">
+        <button type="button" data-weeks="4">4wk</button>
+        <button type="button" data-weeks="12">12wk</button>
+        <button type="button" data-weeks="52">1yr</button>
+        <button type="button" data-weeks="0" class="active">All time</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">CSV export</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">One row per set: date, exercise, muscle_group, weight, reps, rir, e1rm. Spreadsheet-ready.</div>
+      <button id="export-csv-btn" type="button" class="lime full-width">Download CSV</button>
+    </div>
+    <div class="card">
+      <div class="card-title">Copy data (for chat analysis)</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of sessions in this range - paste directly into a chat with Claude for graphs/analysis.</div>
+      <button id="export-json-btn" type="button" class="lime full-width">Copy JSON to clipboard</button>
+      <div id="export-status" class="export-status"></div>
+    </div>
+  </section>
+
+</main>
+
+<div id="update-toast" class="update-toast hidden">
+  <span>New version available.</span>
+  <button type="button" id="update-reload-btn" class="primary">Reload</button>
+</div>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-view="view-log">Log</button>
+  <button class="tab-btn" data-view="view-history">History</button>
+  <button class="tab-btn" data-view="view-prs">PRs</button>
+  <button class="tab-btn" data-view="view-volume">Volume</button>
+  <button class="tab-btn" data-view="view-bodyweight">Body Wt</button>
+  <button class="tab-btn" data-view="view-export">Export</button>
+</nav>
+
+<script src="js/app.js" type="module"></script>
+</body>
+</html>

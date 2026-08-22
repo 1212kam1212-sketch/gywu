@@ -1,0 +1,11 @@
+{
+  "name": "gywu",
+  "version": "2.0.0",
+  "description": "GYWU - personal workout tracker, static PWA (IndexedDB, no server)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/",
+    "serve": "node scripts/dev-server.js"
+  }
+}
