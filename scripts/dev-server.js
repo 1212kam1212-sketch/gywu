@@ -40,5 +40,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`GYWU dev preview at http://localhost:${PORT}`);
+  console.log(`FORGED dev preview at http://localhost:${PORT}`);
 });

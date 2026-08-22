@@ -1,7 +1,7 @@
 {
-  "name": "GYWU",
-  "short_name": "GYWU",
-  "description": "GYWU - personal workout tracker, PRs, and volume dashboard",
+  "name": "FORGED",
+  "short_name": "FORGED",
+  "description": "FORGED - personal workout tracker, PRs, and volume dashboard",
   "start_url": "./index.html",
   "scope": "./",
   "id": "./index.html",

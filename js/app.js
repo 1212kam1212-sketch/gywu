@@ -628,7 +628,7 @@ document.getElementById('export-csv-btn').addEventListener('click', async () => 
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `gywu-export-${todayStr()}.csv`;
+  a.download = `forged-export-${todayStr()}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

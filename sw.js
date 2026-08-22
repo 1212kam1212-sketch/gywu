@@ -1,4 +1,4 @@
-// sw.js — service worker for GYWU.
+// sw.js — service worker for FORGED.
 //
 // Strategy: network-first for everything in ASSETS, falling back to the
 // cache when offline. This means content freshness does NOT depend on

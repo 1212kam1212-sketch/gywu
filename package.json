@@ -1,7 +1,7 @@
 {
-  "name": "gywu",
+  "name": "forged",
   "version": "2.0.0",
-  "description": "GYWU - personal workout tracker, static PWA (IndexedDB, no server)",
+  "description": "FORGED - personal workout tracker, static PWA (IndexedDB, no server)",
   "type": "module",
   "private": true,
   "scripts": {

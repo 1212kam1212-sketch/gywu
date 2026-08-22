@@ -1,4 +1,4 @@
-# GYWU — personal workout tracker
+# FORGED — personal workout tracker
 
 A phone-installable, offline-capable workout tracker. Log sets, track PRs,
 watch weekly volume, log body weight, and export everything back out — all
@@ -35,7 +35,7 @@ Once deployed to GitHub Pages (see below), open the site URL on your phone.
 1. Open the site URL in Chrome.
 2. Tap the **⋮** menu → **Add to Home screen** (or Chrome may show an
    "Install app" banner automatically — tap it).
-3. Confirm. GYWU now opens full-screen from your home screen like a native
+3. Confirm. FORGED now opens full-screen from your home screen like a native
    app, and works offline after the first load.
 
 ### iOS (Safari)
@@ -46,12 +46,12 @@ Chrome or other browsers on iOS.
 1. Open the site URL in **Safari** (not Chrome).
 2. Tap the **Share** button (square with an arrow pointing up).
 3. Scroll down and tap **Add to Home Screen**.
-4. Tap **Add**. GYWU now opens full-screen from your home screen.
+4. Tap **Add**. FORGED now opens full-screen from your home screen.
 
 iOS quirks worth knowing: Safari only starts caching offline assets once
 you open the installed home-screen app at least once while online, and
 iOS is more aggressive about clearing site storage (including IndexedDB)
-for apps you haven't opened in a while — open GYWU every so often, and
+for apps you haven't opened in a while — open FORGED every so often, and
 export your data periodically (see Export below) as a backup regardless.
 
 ## Deploying / updating
@@ -63,11 +63,11 @@ export your data periodically (see Export below) as a backup regardless.
    finishing (check the **Actions** tab on GitHub for progress).
 3. **How it reaches your phone:** the service worker (`sw.js`) fetches
    fresh copies of the app's files over the network whenever your phone is
-   online, so the next time you open GYWU with a connection, you're already
+   online, so the next time you open FORGED with a connection, you're already
    on the latest version — no manual cache-clearing needed. If `sw.js`
    itself changes (rare — only happens if the caching strategy changes),
    you'll see an in-app "New version available" toast; tap **Reload** to
-   pick it up immediately. Offline, GYWU always falls back to whatever was
+   pick it up immediately. Offline, FORGED always falls back to whatever was
    last cached, so it keeps working with no connection.
 
 The repo needs to be **public** — GitHub Pages on the free plan only
