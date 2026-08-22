@@ -1,14 +1,27 @@
-:root {
-  --bg: #0a0a0a;
-  --card: #1a1a1a;
-  --border: #2a2a2a;
+﻿:root {
+  --bg: #0d0b09;
+  --card: #1c1815;
+  --border: #322c26;
   --red: #ff1744;
   --lime: #aeff00;
-  --text: #eef0f3;
-  --muted: #8a8f98;
+  --amber: #ffa726;
+  --teal: #2dd4c8;
+  --purple: #b388ff;
+  --blue: #5eb3f0;
+  --text: #f2ece4;
+  --muted: #9c8f82;
+  --surface: #14110d;
   --radius: 14px;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
 }
+
+/* muscle-group color coding, applied via data-group on .muscle-tag */
+span.muscle-tag[data-group="Chest"] { color: var(--red); }
+span.muscle-tag[data-group="Back"] { color: var(--teal); }
+span.muscle-tag[data-group="Legs"] { color: var(--amber); }
+span.muscle-tag[data-group="Shoulders"] { color: var(--purple); }
+span.muscle-tag[data-group="Arms"] { color: var(--lime); }
+span.muscle-tag[data-group="Core"] { color: var(--blue); }
 
 * { box-sizing: border-box; }
 
@@ -23,14 +36,16 @@ html, body {
 body {
   padding-bottom: 84px; /* room for tab bar */
   background-image:
-    linear-gradient(rgba(255, 23, 68, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 23, 68, 0.035) 1px, transparent 1px);
-  background-size: 28px 28px;
+    radial-gradient(ellipse 900px 600px at 15% -10%, rgba(255, 167, 38, 0.05), transparent 60%),
+    radial-gradient(ellipse 900px 700px at 100% 20%, rgba(45, 212, 200, 0.04), transparent 55%),
+    linear-gradient(rgba(255, 167, 38, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 167, 38, 0.03) 1px, transparent 1px);
+  background-size: auto, auto, 28px 28px, 28px 28px;
   background-attachment: fixed;
   min-height: 100vh;
 }
 
-::selection { background: var(--red); color: #0a0a0a; }
+::selection { background: var(--red); color: var(--bg); }
 
 /* ---------- header ---------- */
 
@@ -124,7 +139,7 @@ body {
 
 select, input[type="text"], input[type="number"], input[type="date"], textarea {
   width: 100%;
-  background: #101010;
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 10px;
@@ -161,7 +176,7 @@ button:active { transform: scale(0.96); }
 
 button.primary {
   background: var(--red);
-  color: #0a0a0a;
+  color: var(--bg);
   box-shadow: 0 0 0 rgba(255, 23, 68, 0);
 }
 button.primary:hover { box-shadow: 0 0 18px rgba(255, 23, 68, 0.5); }
@@ -175,7 +190,7 @@ button.secondary:hover { border-color: var(--muted); color: var(--text); }
 
 button.lime {
   background: var(--lime);
-  color: #0a0a0a;
+  color: var(--bg);
 }
 button.lime:hover { box-shadow: 0 0 18px rgba(174, 255, 0, 0.45); }
 
@@ -184,7 +199,7 @@ button.full-width { width: 100%; }
 .link-btn {
   background: none;
   border: none;
-  color: var(--red);
+  color: var(--amber);
   padding: 6px 0 0;
   font-size: 0.85rem;
   font-weight: 600;
@@ -252,7 +267,7 @@ button.full-width { width: 100%; }
   gap: 8px;
 }
 .chip {
-  background: #101010;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 6px 12px;
@@ -363,13 +378,13 @@ canvas { width: 100%; height: auto; }
 .range-presets button {
   padding: 6px 10px;
   font-size: 0.75rem;
-  background: #101010;
+  background: var(--surface);
   color: var(--muted);
   border: 1px solid var(--border);
 }
 .range-presets button.active {
-  color: var(--red);
-  border-color: var(--red);
+  color: var(--amber);
+  border-color: var(--amber);
 }
 
 /* ---------- rest timer (sticky, inline on Log screen) ---------- */
@@ -378,12 +393,12 @@ canvas { width: 100%; height: auto; }
   position: sticky;
   top: 0;
   z-index: 20;
-  background: #101010;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
   margin-bottom: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 20px rgba(20, 14, 8, 0.55);
 }
 
 .rest-timer-presets {
@@ -395,11 +410,11 @@ canvas { width: 100%; height: auto; }
 .rest-timer-presets button {
   padding: 8px 12px;
   font-size: 0.8rem;
-  background: #1a1a1a;
+  background: var(--card);
   color: var(--muted);
   border: 1px solid var(--border);
 }
-.rest-timer-presets button:hover { color: var(--text); border-color: var(--red); }
+.rest-timer-presets button:hover { color: var(--text); border-color: var(--amber); }
 .rest-timer-presets input[type="number"] {
   width: 76px;
   margin-bottom: 0;
@@ -432,7 +447,7 @@ canvas { width: 100%; height: auto; }
 .rest-timer-progress {
   flex: 1;
   height: 8px;
-  background: #1a1a1a;
+  background: var(--card);
   border-radius: 999px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -467,7 +482,7 @@ canvas { width: 100%; height: auto; }
 }
 
 @keyframes timer-pulse {
-  0%, 100% { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); }
+  0%, 100% { box-shadow: 0 4px 20px rgba(20, 14, 8, 0.55); }
   50% { box-shadow: 0 0 26px rgba(255, 23, 68, 0.6); }
 }
 
@@ -475,7 +490,7 @@ canvas { width: 100%; height: auto; }
   animation: timer-done-flash 0.4s ease-in-out 4;
 }
 @keyframes timer-done-flash {
-  0%, 100% { background: #101010; }
+  0%, 100% { background: var(--surface); }
   50% { background: rgba(255, 23, 68, 0.35); }
 }
 
@@ -510,7 +525,7 @@ canvas { width: 100%; height: auto; }
   left: 0;
   right: 0;
   display: flex;
-  background: #101010;
+  background: var(--surface);
   border-top: 1px solid var(--border);
   padding: 6px 0 max(6px, env(safe-area-inset-bottom));
   z-index: 30;

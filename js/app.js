@@ -1,4 +1,4 @@
-// app.js — UI wiring. Imports pure logic from lib.js and storage from db.js.
+﻿// app.js — UI wiring. Imports pure logic from lib.js and storage from db.js.
 
 import { toCSV, toJSONExport } from './lib.js';
 import * as db from './db.js';
@@ -194,7 +194,7 @@ async function refreshTodaySession() {
       const block = document.createElement('div');
       block.className = 'exercise-block';
       const h4 = document.createElement('h4');
-      h4.innerHTML = `${ex.exercise_name} <span class="muscle-tag">${ex.muscle_group}</span>`;
+      h4.innerHTML = `${ex.exercise_name} <span class="muscle-tag" data-group="${ex.muscle_group}">${ex.muscle_group}</span>`;
       block.appendChild(h4);
       for (const s of ex.sets) {
         const row = document.createElement('div');
@@ -460,7 +460,7 @@ async function refreshPRs() {
     .map(
       (p) => `
     <div class="pr-card">
-      <h4>${p.exercise_name} <span class="muscle-tag">${p.muscle_group}</span></h4>
+      <h4>${p.exercise_name} <span class="muscle-tag" data-group="${p.muscle_group}">${p.muscle_group}</span></h4>
       <div class="pr-line">Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}</div>
       <div class="pr-line">Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})</div>
     </div>`
@@ -562,8 +562,8 @@ function drawBodyWeightChart(rows) {
   ctx.fillText(maxVal.toFixed(1), 4, padding.top + 10);
   ctx.fillText(minVal.toFixed(1), 4, padding.top + plotH);
 
-  ctx.strokeStyle = '#aeff00';
-  ctx.shadowColor = '#aeff00';
+  ctx.strokeStyle = '#2dd4c8';
+  ctx.shadowColor = '#2dd4c8';
   ctx.shadowBlur = 6;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -575,7 +575,7 @@ function drawBodyWeightChart(rows) {
   ctx.stroke();
   ctx.shadowBlur = 0;
   rows.forEach((r, i) => {
-    ctx.fillStyle = '#aeff00';
+    ctx.fillStyle = '#2dd4c8';
     ctx.beginPath();
     ctx.arc(x(i), y(r.weight), 3, 0, Math.PI * 2);
     ctx.fill();
