@@ -194,6 +194,12 @@ button.lime {
 }
 button.lime:hover { box-shadow: 0 0 18px rgba(174, 255, 0, 0.45); }
 
+button.blue {
+  background: var(--blue);
+  color: var(--bg);
+}
+button.blue:hover { box-shadow: 0 0 18px rgba(94, 179, 240, 0.45); }
+
 button.full-width { width: 100%; }
 
 .link-btn {
@@ -335,6 +341,47 @@ th, td {
 th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 1px; }
 
 .table-scroll { overflow-x: auto; }
+
+/* ---------- past-session notes (History tab) ---------- */
+
+.session-notes-item {
+  border-bottom: 1px solid var(--border);
+}
+.session-notes-item:last-child { border-bottom: none; }
+
+.session-notes-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  font-size: 0.9rem;
+  font-family: var(--mono);
+  text-align: left;
+}
+.session-notes-toggle:active { transform: none; }
+
+.session-notes-summary {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.session-notes-body {
+  padding-bottom: 10px;
+}
+.session-notes-body textarea { margin-bottom: 10px; }
+
+.notes-save-status {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: var(--lime);
+  min-height: 1.2em;
+}
 
 .legend {
   display: flex;

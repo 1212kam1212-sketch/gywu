@@ -10,7 +10,6 @@ const state = {
   historyRangeWeeks: 52,
   volumeRangeWeeks: 8,
   exportRangeWeeks: 0,
-  notesSaveTimer: null,
 };
 
 // ---------- small helpers ----------
@@ -56,7 +55,10 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.view).classList.add('active');
-    if (btn.dataset.view === 'view-history') refreshHistory();
+    if (btn.dataset.view === 'view-history') {
+      refreshHistory();
+      refreshSessionNotesList();
+    }
     if (btn.dataset.view === 'view-prs') refreshPRs();
     if (btn.dataset.view === 'view-volume') refreshVolume();
     if (btn.dataset.view === 'view-bodyweight') refreshBodyWeight();
@@ -218,14 +220,76 @@ async function refreshTodaySession() {
 }
 
 // ---------- session notes (feature 3) ----------
+//
+// Every notes textarea (today's, and past-session ones in History) shares
+// this autosave helper: a 500ms debounce on typing, plus an immediate flush
+// on blur/visibilitychange/pagehide so a note is never lost to timing if the
+// tab or app closes mid-debounce. `pendingNoteSaves` tracks one in-flight
+// save per textarea element, keyed with the sessionId already resolved -
+// flushing is then a synchronous db.updateSessionNotes() call, no awaiting
+// session lookup at exit time.
 
-document.getElementById('session-notes').addEventListener('input', (e) => {
+const pendingNoteSaves = new Map(); // textarea element -> { sessionId, value, timer }
+
+function scheduleNotesSave(textareaEl, sessionId, value) {
+  const existing = pendingNoteSaves.get(textareaEl);
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => flushNotesSave(textareaEl), 500);
+  pendingNoteSaves.set(textareaEl, { sessionId, value, timer });
+}
+
+function flushNotesSave(textareaEl) {
+  const pending = pendingNoteSaves.get(textareaEl);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pendingNoteSaves.delete(textareaEl);
+  db.updateSessionNotes(pending.sessionId, pending.value).catch((err) => {
+    console.error('Failed to save session notes', err);
+  });
+}
+
+function flushAllPendingNoteSaves() {
+  Array.from(pendingNoteSaves.keys()).forEach(flushNotesSave);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushAllPendingNoteSaves();
+});
+window.addEventListener('pagehide', flushAllPendingNoteSaves);
+
+// Explicit "Save Note" button: cancels any pending debounce (so it can't be
+// clobbered by a delayed autosave firing right after) and writes immediately,
+// showing a confirmation in statusEl.
+async function saveNotesNow(textareaEl, sessionId, statusEl) {
+  const pending = pendingNoteSaves.get(textareaEl);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingNoteSaves.delete(textareaEl);
+  }
+  try {
+    await db.updateSessionNotes(sessionId, textareaEl.value);
+    if (statusEl) {
+      statusEl.textContent = 'Saved.';
+      clearTimeout(statusEl._clearTimer);
+      statusEl._clearTimer = setTimeout(() => { statusEl.textContent = ''; }, 2000);
+    }
+  } catch (err) {
+    console.error('Failed to save session notes', err);
+    if (statusEl) statusEl.textContent = 'Could not save - try again.';
+  }
+}
+
+const todayNotesEl = document.getElementById('session-notes');
+todayNotesEl.addEventListener('input', async (e) => {
   const value = e.target.value;
-  clearTimeout(state.notesSaveTimer);
-  state.notesSaveTimer = setTimeout(async () => {
-    const session = await ensureTodaySession();
-    await db.updateSessionNotes(session.id, value);
-  }, 500);
+  const sessionId = state.todaySessionId ?? (await ensureTodaySession()).id;
+  scheduleNotesSave(todayNotesEl, sessionId, value);
+});
+todayNotesEl.addEventListener('blur', () => flushNotesSave(todayNotesEl));
+
+document.getElementById('session-notes-save').addEventListener('click', async () => {
+  const sessionId = state.todaySessionId ?? (await ensureTodaySession()).id;
+  await saveNotesNow(todayNotesEl, sessionId, document.getElementById('session-notes-status'));
 });
 
 // ---------- rest timer (feature 1: inline on Log screen only) ----------
@@ -445,6 +509,67 @@ function renderHistoryTable(rows) {
   }
   html += '</tbody></table>';
   container.innerHTML = html;
+}
+
+// Past-session notes: browse recent sessions and view/edit notes for any of
+// them, not just today's. Uses the existing listSessions()/getSessionDetail()/
+// updateSessionNotes() - no new data access, same autosave helper as today's
+// notes textarea (debounce + blur/visibilitychange/pagehide flush).
+async function refreshSessionNotesList() {
+  const sessions = await db.listSessions({ limit: 30 });
+  const container = document.getElementById('session-notes-list');
+  container.innerHTML = '';
+
+  if (!sessions.length) {
+    container.innerHTML = '<div class="empty-note">No sessions logged yet.</div>';
+    return;
+  }
+
+  for (const session of sessions) {
+    const item = document.createElement('div');
+    item.className = 'session-notes-item';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'session-notes-toggle';
+    const setLabel = `${session.set_count} set${session.set_count === 1 ? '' : 's'}`;
+    toggle.innerHTML = `<span>${prettyDate(session.date)}</span><span class="session-notes-summary">${setLabel}${session.notes ? ' · has notes' : ''}</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'session-notes-body hidden';
+    const textarea = document.createElement('textarea');
+    textarea.placeholder = 'Session notes...';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'blue full-width';
+    saveBtn.textContent = 'Save Note';
+    const status = document.createElement('div');
+    status.className = 'notes-save-status';
+    body.appendChild(textarea);
+    body.appendChild(saveBtn);
+    body.appendChild(status);
+
+    let loaded = false;
+    toggle.addEventListener('click', async () => {
+      const opening = body.classList.contains('hidden');
+      if (opening && !loaded) {
+        const detail = await db.getSessionDetail(session.id);
+        textarea.value = (detail && detail.notes) || '';
+        loaded = true;
+      }
+      body.classList.toggle('hidden');
+    });
+
+    textarea.addEventListener('input', () => {
+      scheduleNotesSave(textarea, session.id, textarea.value);
+    });
+    textarea.addEventListener('blur', () => flushNotesSave(textarea));
+    saveBtn.addEventListener('click', () => saveNotesNow(textarea, session.id, status));
+
+    item.appendChild(toggle);
+    item.appendChild(body);
+    container.appendChild(item);
+  }
 }
 
 // ---------- PRS tab ----------
