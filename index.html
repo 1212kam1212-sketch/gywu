@@ -147,6 +147,37 @@
       <div class="card-title">Session notes</div>
       <div id="session-notes-list"></div>
     </div>
+
+    <div class="card">
+      <div class="card-title">Edit exercises</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">Fix a typo, or merge two entries if the same lift got logged under two names - the sets are combined onto one exercise and nothing is lost.</div>
+
+      <label class="field-label" for="edit-ex-select">Exercise</label>
+      <select id="edit-ex-select"></select>
+      <label class="field-label" for="edit-ex-name">Rename to</label>
+      <input id="edit-ex-name" type="text" placeholder="New name" />
+      <label class="field-label" for="edit-ex-group">Muscle group</label>
+      <select id="edit-ex-group">
+        <option>Chest</option>
+        <option>Back</option>
+        <option>Legs</option>
+        <option>Shoulders</option>
+        <option>Arms</option>
+        <option>Core</option>
+        <option>Other</option>
+      </select>
+      <button id="edit-ex-rename-btn" type="button" class="blue full-width">Rename</button>
+      <div id="edit-ex-status" class="notes-save-status"></div>
+
+      <div class="hr-divider"></div>
+
+      <label class="field-label" for="merge-from-select">Merge this exercise...</label>
+      <select id="merge-from-select"></select>
+      <label class="field-label" for="merge-into-select">...into this one (the one that's kept)</label>
+      <select id="merge-into-select"></select>
+      <button id="merge-ex-btn" type="button" class="primary full-width">Merge</button>
+      <div id="merge-ex-status" class="notes-save-status"></div>
+    </div>
   </section>
 
   <!-- PRS -->
@@ -215,9 +246,30 @@
     </div>
     <div class="card">
       <div class="card-title">Copy data (for chat analysis)</div>
-      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of sessions in this range - paste directly into a chat with Claude for graphs/analysis.</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of <code>{ sessions, bodyWeight, prHistory }</code> in this range - paste directly into a chat with Claude for graphs/analysis.</div>
       <button id="export-json-btn" type="button" class="lime full-width">Copy JSON to clipboard</button>
       <div id="export-status" class="export-status"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">PR history</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">One row per milestone - every time a lift hit a new heaviest set or a new best estimated 1RM, with the date. Spreadsheet-ready, all-time.</div>
+      <button id="export-pr-history-btn" type="button" class="lime full-width">Download PR history CSV</button>
+      <div id="export-pr-status" class="export-status"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Backup file</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">Every session and body-weight entry as a downloadable <code>.json</code> file. Full history regardless of the date range above - this is the file to keep as a backup and to re-import later.</div>
+      <button id="backup-json-btn" type="button" class="lime full-width">Download backup (JSON)</button>
+      <div id="backup-status" class="export-status"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Import JSON</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">Choose a backup file or paste JSON (a backup file, or the "Copy data" output). Import only <strong>adds</strong> - it never edits or deletes anything already saved, and re-importing the same file changes nothing.</div>
+      <input id="import-file" type="file" accept=".json,application/json" />
+      <textarea id="import-text" placeholder="...or paste JSON here"></textarea>
+      <button id="import-btn" type="button" class="blue full-width">Import</button>
+      <div id="import-status" class="export-status"></div>
     </div>
   </section>
 

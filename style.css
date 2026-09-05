@@ -382,6 +382,34 @@ th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size
   color: var(--lime);
   min-height: 1.2em;
 }
+.notes-save-status.error { color: var(--red); }
+
+.hr-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 16px 0;
+}
+
+/* ---------- PR progression (PRs tab) ---------- */
+
+.pr-history-toggle {
+  background: none;
+  border: none;
+  color: var(--amber);
+  padding: 8px 0 2px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.pr-history-toggle:active { transform: none; }
+
+.pr-history-body {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+.pr-history-body td.rec-both { color: var(--lime); }
+.pr-history-body td.rec-weight { color: var(--red); }
+.pr-history-body td.rec-e1rm { color: var(--amber); }
 
 .legend {
   display: flex;
@@ -562,6 +590,14 @@ canvas { width: 100%; height: auto; }
   font-size: 0.82rem;
   color: var(--lime);
   min-height: 1.2em;
+}
+.export-status.error { color: var(--red); }
+
+#import-file {
+  width: 100%;
+  margin-bottom: 10px;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
 
 /* ---------- tab bar ---------- */

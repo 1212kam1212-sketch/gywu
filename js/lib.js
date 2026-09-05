@@ -97,6 +97,67 @@ export function computePRs(rows) {
   return results;
 }
 
+// ---------- PR history ----------
+
+// rows: flat sets [{ exercise_id, exercise_name, muscle_group, weight,
+//   reps, rir, date, set_order }]
+// Returns one entry per exercise (sorted by name):
+//   { exercise_id, exercise_name, muscle_group,
+//     milestones: [{ date, weight, reps, rir, e1rm, isWeightPR, isE1RMPR }] }
+// A milestone is any set that beat the running best weight (heaviest ever,
+// any rep count) and/or the running best estimated 1RM. Ties don't count,
+// same "must exceed" rule as detectPR. Milestones are chronological; within
+// a day, set_order decides which set came first.
+export function computePRHistory(rows) {
+  const byExercise = new Map();
+  for (const r of rows) {
+    if (!byExercise.has(r.exercise_id)) {
+      byExercise.set(r.exercise_id, {
+        exercise_id: r.exercise_id,
+        exercise_name: r.exercise_name,
+        muscle_group: r.muscle_group,
+        sets: [],
+      });
+    }
+    byExercise.get(r.exercise_id).sets.push(r);
+  }
+
+  const results = [];
+  for (const ex of byExercise.values()) {
+    const sorted = [...ex.sets].sort(
+      (a, b) => a.date.localeCompare(b.date) || (a.set_order || 0) - (b.set_order || 0)
+    );
+    let bestWeight = -Infinity;
+    let bestE1RM = -Infinity;
+    const milestones = [];
+    for (const s of sorted) {
+      const e = estimate1RM(s.weight, s.reps);
+      const isWeightPR = s.weight > bestWeight;
+      const isE1RMPR = e > bestE1RM;
+      if (isWeightPR || isE1RMPR) {
+        milestones.push({
+          date: s.date,
+          weight: s.weight,
+          reps: s.reps,
+          rir: s.rir ?? null,
+          e1rm: Math.round(e * 10) / 10,
+          isWeightPR,
+          isE1RMPR,
+        });
+      }
+      if (isWeightPR) bestWeight = s.weight;
+      if (isE1RMPR) bestE1RM = e;
+    }
+    results.push({
+      exercise_id: ex.exercise_id,
+      exercise_name: ex.exercise_name,
+      muscle_group: ex.muscle_group,
+      milestones,
+    });
+  }
+  return results.sort((a, b) => a.exercise_name.localeCompare(b.exercise_name));
+}
+
 // ---------- export formatting ----------
 
 function csvEscape(value) {
@@ -127,6 +188,31 @@ export function toCSV(setsRows) {
   return lines.join('\n') + '\n';
 }
 
+// prHistory: the output of computePRHistory. One row per milestone.
+// header: date,exercise,muscle_group,weight,reps,rir,e1rm,record
+export function toPRHistoryCSV(prHistory) {
+  const header = ['date', 'exercise', 'muscle_group', 'weight', 'reps', 'rir', 'e1rm', 'record'];
+  const lines = [header.join(',')];
+  for (const ex of prHistory) {
+    for (const m of ex.milestones) {
+      const record = m.isWeightPR && m.isE1RMPR ? 'weight + e1rm' : m.isWeightPR ? 'weight' : 'e1rm';
+      lines.push(
+        [
+          csvEscape(m.date),
+          csvEscape(ex.exercise_name),
+          csvEscape(ex.muscle_group),
+          csvEscape(m.weight),
+          csvEscape(m.reps),
+          csvEscape(m.rir ?? ''),
+          csvEscape(m.e1rm),
+          csvEscape(record),
+        ].join(',')
+      );
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
 // sessions: [{ date, notes, exercises: [{ exercise_name, muscle_group, sets: [{weight,reps,rir}] }] }]
 // Returns array of { date, notes, exercises: [{ name, muscle_group, sets: [{weight,reps,rir}] }] }
 export function toJSONExport(sessions) {
@@ -139,4 +225,105 @@ export function toJSONExport(sessions) {
       sets: ex.sets.map((st) => ({ weight: st.weight, reps: st.reps, rir: st.rir ?? null })),
     })),
   }));
+}
+
+// ---------- import / backup ----------
+
+// Wrap the JSON-export session array plus body-weight rows into one
+// self-describing object for the downloadable full backup. toJSONExport
+// stays a bare array (that output also gets pasted straight into chats),
+// so the file that must round-trip *everything* gets its own shape here.
+export function toBackupJSON(sessions, bodyWeight, exportedAtISO) {
+  return {
+    app: 'FORGED',
+    version: 1,
+    exported_at: exportedAtISO || new Date().toISOString(),
+    sessions: toJSONExport(sessions),
+    bodyWeight: (bodyWeight || []).map((b) => ({ date: b.date, weight: b.weight })),
+  };
+}
+
+const IMPORT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function importFail(msg) {
+  throw new Error('Import failed: ' + msg);
+}
+
+// Parse + validate a pasted / loaded import payload. Accepts either the
+// bare session array produced by toJSONExport, or a { sessions, bodyWeight }
+// object (the toBackupJSON shape). Returns a normalized
+// { sessions, bodyWeight, summary } with every field type-checked, or
+// throws an Error with a human-readable reason. Touches no storage - the
+// caller hands the result to db.importData().
+export function parseImportJSON(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    importFail('that is not valid JSON.');
+  }
+
+  let sessionsIn, bodyWeightIn;
+  if (Array.isArray(raw)) {
+    sessionsIn = raw;
+    bodyWeightIn = [];
+  } else if (raw && typeof raw === 'object' && Array.isArray(raw.sessions)) {
+    sessionsIn = raw.sessions;
+    bodyWeightIn = Array.isArray(raw.bodyWeight) ? raw.bodyWeight : [];
+  } else {
+    importFail('expected a JSON array of sessions, or an object with a "sessions" array.');
+  }
+
+  const sessions = sessionsIn.map((s, i) => {
+    const where = `session ${i + 1}`;
+    if (!s || typeof s !== 'object') importFail(`${where} is not an object.`);
+    if (!IMPORT_DATE_RE.test(s.date)) importFail(`${where} has a missing or malformed date (expected YYYY-MM-DD).`);
+
+    const exercisesRaw = Array.isArray(s.exercises) ? s.exercises : [];
+    const exercises = exercisesRaw.map((ex, j) => {
+      const exWhere = `${where}, exercise ${j + 1}`;
+      if (!ex || typeof ex !== 'object') importFail(`${exWhere} is not an object.`);
+      const name = String(ex.name ?? ex.exercise_name ?? '').trim();
+      if (!name) importFail(`${exWhere} has no name.`);
+      const muscle_group = String(ex.muscle_group ?? '').trim() || 'Other';
+
+      const setsRaw = Array.isArray(ex.sets) ? ex.sets : [];
+      const sets = setsRaw.map((st, k) => {
+        const stWhere = `${exWhere}, set ${k + 1}`;
+        if (!st || typeof st !== 'object') importFail(`${stWhere} is not an object.`);
+        const weight = Number(st.weight);
+        const reps = Number(st.reps);
+        if (!Number.isFinite(weight) || weight < 0) importFail(`${stWhere} has an invalid weight.`);
+        if (!Number.isInteger(reps) || reps <= 0) importFail(`${stWhere} has an invalid rep count.`);
+        let rir = st.rir;
+        rir = rir === '' || rir === undefined || rir === null ? null : Number(rir);
+        if (rir !== null && (!Number.isFinite(rir) || rir < 0 || rir > 10)) importFail(`${stWhere} has an invalid RIR.`);
+        return { weight, reps, rir };
+      });
+
+      return { name, muscle_group, sets };
+    });
+
+    const notes = typeof s.notes === 'string' ? s.notes : '';
+    return { date: s.date, notes, exercises };
+  });
+
+  const bodyWeight = bodyWeightIn.map((b, i) => {
+    const where = `body-weight entry ${i + 1}`;
+    if (!b || typeof b !== 'object') importFail(`${where} is not an object.`);
+    if (!IMPORT_DATE_RE.test(b.date)) importFail(`${where} has a missing or malformed date.`);
+    const weight = Number(b.weight);
+    if (!Number.isFinite(weight) || weight <= 0) importFail(`${where} has an invalid weight.`);
+    return { date: b.date, weight };
+  });
+
+  const setCount = sessions.reduce(
+    (n, s) => n + s.exercises.reduce((m, e) => m + e.sets.length, 0),
+    0
+  );
+  return {
+    sessions,
+    bodyWeight,
+    summary: { sessions: sessions.length, sets: setCount, bodyWeight: bodyWeight.length },
+  };
 }

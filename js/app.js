@@ -1,6 +1,6 @@
 ﻿// app.js — UI wiring. Imports pure logic from lib.js and storage from db.js.
 
-import { toCSV, toJSONExport } from './lib.js';
+import { toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV } from './lib.js';
 import * as db from './db.js';
 
 const state = {
@@ -58,6 +58,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     if (btn.dataset.view === 'view-history') {
       refreshHistory();
       refreshSessionNotesList();
+      refreshExerciseEditor();
     }
     if (btn.dataset.view === 'view-prs') refreshPRs();
     if (btn.dataset.view === 'view-volume') refreshVolume();
@@ -126,10 +127,13 @@ document.getElementById('exercise-select').addEventListener('change', onExercise
 async function onExerciseChange() {
   const select = document.getElementById('exercise-select');
   state.currentExerciseId = Number(select.value);
-  const last = await db.getLastSetsForExercise(state.currentExerciseId);
+  const last = await db.getLastSetsForExercise(state.currentExerciseId, { excludeDate: todayStr() });
   const card = document.getElementById('last-time-card');
   if (!last) {
-    card.classList.add('hidden');
+    card.classList.remove('hidden');
+    document.getElementById('last-time-date').textContent = 'none yet';
+    document.getElementById('last-time-sets').innerHTML =
+      '<span class="empty-note" style="padding:0">No previous sessions logged for this exercise. If you know you have trained it before, it may have been saved under a slightly different exercise name.</span>';
   } else {
     card.classList.remove('hidden');
     document.getElementById('last-time-date').textContent = prettyDate(last.date);
@@ -572,25 +576,171 @@ async function refreshSessionNotesList() {
   }
 }
 
+// ---------- Edit exercises (History tab) ----------
+//
+// Rename fixes typos; merge combines two entries when the same lift got
+// logged under two names (e.g. "Incline DB Press" vs "Incline Dumbbell
+// Press"), so the "Last time" comparison and history aren't split. Uses
+// db.renameExercise / db.mergeExercises - both keep every set.
+
+function populatePlainExerciseSelect(selectEl, exercises, selectedId) {
+  selectEl.innerHTML = '';
+  for (const ex of exercises) {
+    const opt = document.createElement('option');
+    opt.value = ex.id;
+    opt.textContent = `${ex.name} (${ex.muscle_group})`;
+    if (String(ex.id) === String(selectedId)) opt.selected = true;
+    selectEl.appendChild(opt);
+  }
+}
+
+function syncEditExerciseFields() {
+  const id = Number(document.getElementById('edit-ex-select').value);
+  const ex = state.exercises.find((e) => e.id === id);
+  if (!ex) return;
+  document.getElementById('edit-ex-name').value = ex.name;
+  const groupSel = document.getElementById('edit-ex-group');
+  const hasOption = Array.from(groupSel.options).some((o) => o.value === ex.muscle_group);
+  groupSel.value = hasOption ? ex.muscle_group : 'Other';
+}
+
+function refreshExerciseEditor() {
+  const list = state.exercises;
+  const editSel = document.getElementById('edit-ex-select');
+  const prevEdit = editSel.value;
+  populatePlainExerciseSelect(editSel, list, prevEdit);
+  populatePlainExerciseSelect(document.getElementById('merge-from-select'), list);
+  populatePlainExerciseSelect(document.getElementById('merge-into-select'), list);
+  syncEditExerciseFields();
+}
+
+document.getElementById('edit-ex-select').addEventListener('change', syncEditExerciseFields);
+
+document.getElementById('edit-ex-rename-btn').addEventListener('click', async () => {
+  const status = document.getElementById('edit-ex-status');
+  status.classList.remove('error');
+  const id = Number(document.getElementById('edit-ex-select').value);
+  const name = document.getElementById('edit-ex-name').value.trim();
+  const group = document.getElementById('edit-ex-group').value;
+  if (!id) return;
+  if (!name) {
+    status.classList.add('error');
+    status.textContent = 'Enter a name.';
+    return;
+  }
+  try {
+    await db.renameExercise(id, name, group);
+    const keep = state.currentExerciseId;
+    await loadExercises(keep);
+    document.getElementById('exercise-select').value = keep;
+    document.getElementById('history-exercise-select').value = keep;
+    refreshExerciseEditor();
+    status.textContent = 'Renamed.';
+    clearTimeout(status._t);
+    status._t = setTimeout(() => { status.textContent = ''; }, 2500);
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = err.message;
+  }
+});
+
+document.getElementById('merge-ex-btn').addEventListener('click', async () => {
+  const status = document.getElementById('merge-ex-status');
+  status.classList.remove('error');
+  const btn = document.getElementById('merge-ex-btn');
+  const fromId = Number(document.getElementById('merge-from-select').value);
+  const intoId = Number(document.getElementById('merge-into-select').value);
+  if (!fromId || !intoId || fromId === intoId) {
+    status.classList.add('error');
+    status.textContent = 'Pick two different exercises.';
+    return;
+  }
+  const fromEx = state.exercises.find((e) => e.id === fromId);
+  const intoEx = state.exercises.find((e) => e.id === intoId);
+  const n = await db.countSetsForExercise(fromId);
+  const ok = confirm(
+    `Move ${n} set${n === 1 ? '' : 's'} from "${fromEx.name}" into "${intoEx.name}", then delete "${fromEx.name}"?\n\n` +
+    `Every set is kept - only the extra exercise entry is removed. This can't be undone from the app (re-import a backup to revert).`
+  );
+  if (!ok) return;
+
+  btn.disabled = true;
+  status.textContent = 'Merging...';
+  try {
+    const r = await db.mergeExercises(fromId, intoId);
+    const keep = state.currentExerciseId === fromId ? intoId : state.currentExerciseId;
+    state.currentExerciseId = keep;
+    await loadExercises(keep);
+    document.getElementById('exercise-select').value = keep;
+    document.getElementById('history-exercise-select').value = keep;
+    refreshExerciseEditor();
+    await onExerciseChange();
+    await refreshHistory();
+    status.textContent =
+      `Merged - ${r.movedCount} set${r.movedCount === 1 ? '' : 's'} moved across ` +
+      `${r.sessionsAffected} session${r.sessionsAffected === 1 ? '' : 's'}.`;
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ---------- PRS tab ----------
 
 async function refreshPRs() {
-  const prs = await db.getPRs();
+  const [prs, history] = await Promise.all([db.getPRs(), db.getPRHistory()]);
+  const milestonesById = new Map(history.map((h) => [h.exercise_id, h.milestones]));
   const container = document.getElementById('prs-list');
+  container.innerHTML = '';
+
   if (!prs.length) {
     container.innerHTML = '<div class="empty-note">Log some sets to start tracking PRs.</div>';
     return;
   }
-  container.innerHTML = prs
-    .map(
-      (p) => `
-    <div class="pr-card">
+
+  for (const p of prs) {
+    const card = document.createElement('div');
+    card.className = 'pr-card';
+    card.innerHTML = `
       <h4>${p.exercise_name} <span class="muscle-tag" data-group="${p.muscle_group}">${p.muscle_group}</span></h4>
       <div class="pr-line">Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}</div>
-      <div class="pr-line">Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})</div>
-    </div>`
-    )
-    .join('');
+      <div class="pr-line">Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})</div>`;
+
+    const milestones = milestonesById.get(p.exercise_id) || [];
+    if (milestones.length > 1) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'pr-history-toggle';
+      const label = (open) => `${open ? '▾' : '▸'} Progression (${milestones.length} milestones)`;
+      toggle.textContent = label(false);
+
+      const body = document.createElement('div');
+      body.className = 'pr-history-body hidden';
+      body.innerHTML = renderMilestonesTable(milestones);
+
+      toggle.addEventListener('click', () => {
+        const open = body.classList.toggle('hidden') === false;
+        toggle.textContent = label(open);
+      });
+      card.appendChild(toggle);
+      card.appendChild(body);
+    }
+    container.appendChild(card);
+  }
+}
+
+function renderMilestonesTable(milestones) {
+  let html = '<table><thead><tr><th>Date</th><th>Set</th><th>Est. 1RM</th><th>Record</th></tr></thead><tbody>';
+  for (const m of [...milestones].reverse()) {
+    const cls = m.isWeightPR && m.isE1RMPR ? 'rec-both' : m.isWeightPR ? 'rec-weight' : 'rec-e1rm';
+    const tag = m.isWeightPR && m.isE1RMPR ? 'weight + 1RM' : m.isWeightPR ? 'weight' : '1RM';
+    const rir = m.rir !== null && m.rir !== undefined ? ` @${m.rir}RIR` : '';
+    html += `<tr><td>${prettyDate(m.date)}</td><td>${m.weight} x ${m.reps}${rir}</td><td>${m.e1rm}</td><td class="${cls}">${tag}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
 }
 
 // ---------- VOLUME tab ----------
@@ -763,13 +913,26 @@ document.getElementById('export-csv-btn').addEventListener('click', async () => 
 });
 
 document.getElementById('export-json-btn').addEventListener('click', async () => {
-  const sessions = await db.getSessionsForExport(rangeFromWeeks(state.exportRangeWeeks));
-  const data = toJSONExport(sessions);
+  const range = rangeFromWeeks(state.exportRangeWeeks);
+  const sessions = await db.getSessionsForExport(range);
+  const bodyWeight = await db.listBodyWeight(range);
+  const prHistory = await db.getPRHistory(); // all-time by nature
+  const data = {
+    sessions: toJSONExport(sessions),
+    bodyWeight: bodyWeight.map((b) => ({ date: b.date, weight: b.weight })),
+    prHistory: prHistory
+      .filter((h) => h.milestones.length)
+      .map((h) => ({ exercise: h.exercise_name, muscle_group: h.muscle_group, milestones: h.milestones })),
+  };
   const json = JSON.stringify(data, null, 2);
   const status = document.getElementById('export-status');
+  const summary =
+    `Copied ${data.sessions.length} session${data.sessions.length === 1 ? '' : 's'}` +
+    ` + ${data.bodyWeight.length} body-weight entr${data.bodyWeight.length === 1 ? 'y' : 'ies'}` +
+    ` + PR history for ${data.prHistory.length} exercise${data.prHistory.length === 1 ? '' : 's'} to clipboard.`;
   try {
     await navigator.clipboard.writeText(json);
-    status.textContent = `Copied ${data.length} session${data.length === 1 ? '' : 's'} to clipboard.`;
+    status.textContent = summary;
   } catch {
     // Clipboard API unavailable/blocked - fall back to a manual copy via textarea.
     const ta = document.createElement('textarea');
@@ -781,11 +944,146 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
     ta.select();
     try {
       document.execCommand('copy');
-      status.textContent = `Copied ${data.length} session${data.length === 1 ? '' : 's'} to clipboard.`;
+      status.textContent = summary;
     } catch {
       status.textContent = 'Could not copy automatically - select and copy the data manually.';
     }
     document.body.removeChild(ta);
+  }
+});
+
+document.getElementById('export-pr-history-btn').addEventListener('click', async () => {
+  const status = document.getElementById('export-pr-status');
+  status.classList.remove('error');
+  try {
+    const history = await db.getPRHistory();
+    const csv = toPRHistoryCSV(history);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `forged-pr-history-${todayStr()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const rows = history.reduce((n, h) => n + h.milestones.length, 0);
+    status.textContent = `Downloaded ${rows} PR milestone${rows === 1 ? '' : 's'}.`;
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = 'Could not build the PR history: ' + err.message;
+  }
+});
+
+// ---------- backup file download ----------
+
+document.getElementById('backup-json-btn').addEventListener('click', async () => {
+  const status = document.getElementById('backup-status');
+  status.classList.remove('error');
+  try {
+    const sessions = await db.getSessionsForExport(); // no range = all time
+    const bodyWeight = await db.listBodyWeight();      // no range = all time
+    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString());
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `forged-backup-${todayStr()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const sCount = backup.sessions.length;
+    const bCount = backup.bodyWeight.length;
+    status.textContent = `Saved ${sCount} session${sCount === 1 ? '' : 's'} and ${bCount} body-weight entr${bCount === 1 ? 'y' : 'ies'}.`;
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = 'Could not build the backup: ' + err.message;
+  }
+});
+
+// ---------- import ----------
+
+const importFileEl = document.getElementById('import-file');
+const importTextEl = document.getElementById('import-text');
+
+importFileEl.addEventListener('change', () => {
+  const file = importFileEl.files && importFileEl.files[0];
+  if (!file) return;
+  const status = document.getElementById('import-status');
+  const reader = new FileReader();
+  reader.onload = () => {
+    importTextEl.value = String(reader.result || '');
+    status.classList.remove('error');
+    status.textContent = `Loaded ${file.name}. Review, then tap Import.`;
+  };
+  reader.onerror = () => {
+    status.classList.add('error');
+    status.textContent = 'Could not read that file.';
+  };
+  reader.readAsText(file);
+});
+
+document.getElementById('import-btn').addEventListener('click', async () => {
+  const status = document.getElementById('import-status');
+  const btn = document.getElementById('import-btn');
+  status.classList.remove('error');
+  status.textContent = '';
+
+  const text = importTextEl.value.trim();
+  if (!text) {
+    status.classList.add('error');
+    status.textContent = 'Choose a file or paste some JSON first.';
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseImportJSON(text);
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = err.message;
+    return;
+  }
+
+  const { summary } = parsed;
+  const bwPhrase = summary.bodyWeight
+    ? ` and ${summary.bodyWeight} body-weight entr${summary.bodyWeight === 1 ? 'y' : 'ies'}`
+    : '';
+  const ok = confirm(
+    `Import ${summary.sessions} session${summary.sessions === 1 ? '' : 's'} ` +
+    `(${summary.sets} set${summary.sets === 1 ? '' : 's'})${bwPhrase}?\n\n` +
+    `This only adds data - nothing already saved is changed or deleted.`
+  );
+  if (!ok) return;
+
+  btn.disabled = true;
+  status.textContent = 'Importing...';
+  try {
+    const r = await db.importData(parsed);
+    const parts = [`${r.setsAdded} set${r.setsAdded === 1 ? '' : 's'} added`];
+    if (r.sessionsCreated) parts.push(`${r.sessionsCreated} new session${r.sessionsCreated === 1 ? '' : 's'}`);
+    if (r.exercisesCreated) parts.push(`${r.exercisesCreated} new exercise${r.exercisesCreated === 1 ? '' : 's'}`);
+    if (r.bodyWeightAdded) parts.push(`${r.bodyWeightAdded} body-weight entr${r.bodyWeightAdded === 1 ? 'y' : 'ies'}`);
+    if (r.setsSkipped) parts.push(`${r.setsSkipped} duplicate set${r.setsSkipped === 1 ? '' : 's'} skipped`);
+    if (r.notesFilled) parts.push(`${r.notesFilled} note${r.notesFilled === 1 ? '' : 's'} filled in`);
+    if (r.notesSkipped) parts.push(`${r.notesSkipped} existing note${r.notesSkipped === 1 ? '' : 's'} kept`);
+    if (r.bodyWeightSkipped) parts.push(`${r.bodyWeightSkipped} body-weight date${r.bodyWeightSkipped === 1 ? '' : 's'} already present`);
+    status.textContent = 'Done - ' + parts.join(', ') + '.';
+    importTextEl.value = '';
+    importFileEl.value = '';
+    await loadExercises(state.currentExerciseId);
+    document.getElementById('exercise-select').value = state.currentExerciseId;
+    document.getElementById('history-exercise-select').value = state.currentExerciseId;
+    refreshExerciseEditor();
+    await onExerciseChange();
+    await refreshTodaySession();
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = 'Import error: ' + err.message + ' - fix the file and try again (already-imported rows are kept).';
+  } finally {
+    btn.disabled = false;
   }
 });
 

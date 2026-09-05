@@ -9,6 +9,10 @@ import {
   computePRs,
   toCSV,
   toJSONExport,
+  toBackupJSON,
+  parseImportJSON,
+  computePRHistory,
+  toPRHistoryCSV,
 } from '../js/lib.js';
 
 // ---------- estimate1RM ----------
@@ -137,6 +141,76 @@ test('computePRs: skips exercises with no sets, handles multiple exercises', () 
   assert.equal(prs.length, 2);
 });
 
+// ---------- computePRHistory ----------
+
+const prRow = (o) => ({
+  exercise_id: 1,
+  exercise_name: 'Bench',
+  muscle_group: 'Chest',
+  rir: null,
+  set_order: 1,
+  ...o,
+});
+
+test('computePRHistory: first set is always a milestone (weight + e1rm)', () => {
+  const [ex] = computePRHistory([prRow({ weight: 100, reps: 5, date: '2026-01-01' })]);
+  assert.equal(ex.milestones.length, 1);
+  assert.equal(ex.milestones[0].isWeightPR, true);
+  assert.equal(ex.milestones[0].isE1RMPR, true);
+  assert.equal(ex.milestones[0].e1rm, 116.7);
+});
+
+test('computePRHistory: records each new best chronologically, ignoring non-PRs and ties', () => {
+  const rows = [
+    prRow({ weight: 100, reps: 5, date: '2026-01-01' }),
+    prRow({ weight: 100, reps: 5, date: '2026-01-08' }), // exact tie -> not a milestone
+    prRow({ weight: 105, reps: 3, date: '2026-01-15' }), // e1rm 115.5 < 116.7 -> weight only
+    prRow({ weight: 95, reps: 12, date: '2026-01-22' }), // e1rm 133 -> e1rm only
+    prRow({ weight: 80, reps: 5, date: '2026-01-29' }), // nothing
+  ];
+  const [ex] = computePRHistory(rows);
+  assert.deepEqual(ex.milestones.map((m) => m.date), ['2026-01-01', '2026-01-15', '2026-01-22']);
+  assert.deepEqual(
+    ex.milestones.map((m) => [m.isWeightPR, m.isE1RMPR]),
+    [[true, true], [true, false], [false, true]]
+  );
+});
+
+test('computePRHistory: within a day, set_order decides which set came first', () => {
+  const rows = [
+    prRow({ weight: 80, reps: 5, date: '2026-01-01', set_order: 2 }),
+    prRow({ weight: 100, reps: 5, date: '2026-01-01', set_order: 1 }),
+  ];
+  const [ex] = computePRHistory(rows);
+  assert.equal(ex.milestones.length, 1);
+  assert.equal(ex.milestones[0].weight, 100);
+});
+
+test('computePRHistory: separates exercises and sorts them by name', () => {
+  const rows = [
+    prRow({ exercise_id: 2, exercise_name: 'Squat', muscle_group: 'Legs', weight: 150, reps: 5, date: '2026-01-02' }),
+    prRow({ weight: 100, reps: 5, date: '2026-01-01' }),
+  ];
+  assert.deepEqual(computePRHistory(rows).map((e) => e.exercise_name), ['Bench', 'Squat']);
+});
+
+// ---------- toPRHistoryCSV ----------
+
+test('toPRHistoryCSV: header + one row per milestone with the record type', () => {
+  const rows = [
+    prRow({ weight: 100, reps: 5, rir: 2, date: '2026-01-01' }),
+    prRow({ weight: 105, reps: 3, rir: 1, date: '2026-01-15' }),
+  ];
+  const lines = toPRHistoryCSV(computePRHistory(rows)).trim().split('\n');
+  assert.equal(lines[0], 'date,exercise,muscle_group,weight,reps,rir,e1rm,record');
+  assert.equal(lines[1], '2026-01-01,Bench,Chest,100,5,2,116.7,weight + e1rm');
+  assert.equal(lines[2], '2026-01-15,Bench,Chest,105,3,1,115.5,weight');
+});
+
+test('toPRHistoryCSV: empty input still returns the header row', () => {
+  assert.equal(toPRHistoryCSV([]).trim(), 'date,exercise,muscle_group,weight,reps,rir,e1rm,record');
+});
+
 // ---------- toCSV ----------
 
 test('toCSV: produces header + one row per set with correct columns', () => {
@@ -201,4 +275,118 @@ test('toJSONExport: missing notes defaults to empty string', () => {
   const sessions = [{ date: '2026-08-17', exercises: [] }];
   const out = toJSONExport(sessions);
   assert.equal(out[0].notes, '');
+});
+
+// ---------- parseImportJSON ----------
+
+test('parseImportJSON: accepts the bare toJSONExport array', () => {
+  const arr = [
+    {
+      date: '2026-08-17',
+      notes: 'x',
+      exercises: [
+        { name: 'Bench Press', muscle_group: 'Chest', sets: [{ weight: 100, reps: 5, rir: 2 }] },
+      ],
+    },
+  ];
+  const out = parseImportJSON(JSON.stringify(arr));
+  assert.equal(out.sessions.length, 1);
+  assert.equal(out.sessions[0].exercises[0].name, 'Bench Press');
+  assert.equal(out.sessions[0].exercises[0].sets[0].weight, 100);
+  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0 });
+});
+
+test('parseImportJSON: accepts a { sessions, bodyWeight } backup object', () => {
+  const obj = {
+    app: 'FORGED',
+    version: 1,
+    sessions: [],
+    bodyWeight: [{ date: '2026-08-17', weight: 80 }],
+  };
+  const out = parseImportJSON(JSON.stringify(obj));
+  assert.equal(out.sessions.length, 0);
+  assert.deepEqual(out.bodyWeight, [{ date: '2026-08-17', weight: 80 }]);
+  assert.equal(out.summary.bodyWeight, 1);
+});
+
+test('parseImportJSON: tolerates exercise_name instead of name', () => {
+  const arr = [
+    { date: '2026-08-17', exercises: [{ exercise_name: 'Squat', muscle_group: 'Legs', sets: [] }] },
+  ];
+  const out = parseImportJSON(JSON.stringify(arr));
+  assert.equal(out.sessions[0].exercises[0].name, 'Squat');
+});
+
+test('parseImportJSON: normalizes missing rir to null and missing notes to ""', () => {
+  const arr = [{ date: '2026-08-17', exercises: [{ name: 'Bench', sets: [{ weight: 100, reps: 5 }] }] }];
+  const out = parseImportJSON(JSON.stringify(arr));
+  assert.equal(out.sessions[0].notes, '');
+  assert.equal(out.sessions[0].exercises[0].sets[0].rir, null);
+});
+
+test('parseImportJSON: defaults a missing muscle_group to "Other"', () => {
+  const arr = [{ date: '2026-08-17', exercises: [{ name: 'Farmer Carry', sets: [] }] }];
+  const out = parseImportJSON(JSON.stringify(arr));
+  assert.equal(out.sessions[0].exercises[0].muscle_group, 'Other');
+});
+
+test('parseImportJSON: rejects invalid JSON', () => {
+  assert.throws(() => parseImportJSON('{not json'), /valid JSON/);
+});
+
+test('parseImportJSON: rejects a malformed session date', () => {
+  assert.throws(() => parseImportJSON(JSON.stringify([{ date: 'Aug 17', exercises: [] }])), /malformed date/);
+});
+
+test('parseImportJSON: rejects a non-positive-integer rep count', () => {
+  const arr = [{ date: '2026-08-17', exercises: [{ name: 'Bench', sets: [{ weight: 100, reps: 0 }] }] }];
+  assert.throws(() => parseImportJSON(JSON.stringify(arr)), /rep count/);
+});
+
+test('parseImportJSON: rejects a negative weight', () => {
+  const arr = [{ date: '2026-08-17', exercises: [{ name: 'Bench', sets: [{ weight: -5, reps: 5 }] }] }];
+  assert.throws(() => parseImportJSON(JSON.stringify(arr)), /invalid weight/);
+});
+
+test('parseImportJSON: rejects a top-level object with no sessions array', () => {
+  assert.throws(() => parseImportJSON('{"foo":1}'), /sessions/);
+});
+
+// ---------- toBackupJSON ----------
+
+test('toBackupJSON: wraps sessions + body weight with metadata, stripping ids', () => {
+  const sessions = [
+    {
+      date: '2026-08-17',
+      notes: '',
+      exercises: [
+        { exercise_name: 'Bench', muscle_group: 'Chest', sets: [{ weight: 100, reps: 5, rir: null }] },
+      ],
+    },
+  ];
+  const bw = [{ id: 3, date: '2026-08-17', weight: 80 }];
+  const out = toBackupJSON(sessions, bw, '2026-08-17T00:00:00.000Z');
+  assert.equal(out.app, 'FORGED');
+  assert.equal(out.version, 1);
+  assert.equal(out.exported_at, '2026-08-17T00:00:00.000Z');
+  assert.deepEqual(out.sessions, toJSONExport(sessions));
+  assert.deepEqual(out.bodyWeight, [{ date: '2026-08-17', weight: 80 }]);
+});
+
+test('toBackupJSON: round-trips through parseImportJSON', () => {
+  const sessions = [
+    {
+      date: '2026-08-17',
+      notes: 'hi',
+      exercises: [
+        { exercise_name: 'Bench', muscle_group: 'Chest', sets: [{ weight: 100, reps: 5, rir: 2 }] },
+      ],
+    },
+  ];
+  const backup = toBackupJSON(sessions, [{ date: '2026-08-17', weight: 80 }], '2026-08-17T00:00:00.000Z');
+  const parsed = parseImportJSON(JSON.stringify(backup));
+  assert.equal(parsed.sessions[0].exercises[0].name, 'Bench');
+  assert.equal(parsed.sessions[0].exercises[0].sets[0].rir, 2);
+  assert.equal(parsed.sessions[0].notes, 'hi');
+  assert.deepEqual(parsed.bodyWeight, [{ date: '2026-08-17', weight: 80 }]);
 });

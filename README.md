@@ -91,28 +91,61 @@ from the **Export** tab:
 
 - **Download CSV** — one row per set: `date, exercise, muscle_group,
   weight, reps, rir, e1rm`. Opens directly in any spreadsheet app.
-- **Copy JSON** — copies a structured dump of your sessions to the
+- **Copy JSON** — copies `{ sessions, bodyWeight, prHistory }` to the
   clipboard, meant to be pasted directly into a chat with Claude (or any
-  LLM) for custom graphs/analysis.
+  LLM) for custom graphs/analysis. `prHistory` is always all-time.
+- **Download PR history CSV** — one row per PR milestone: `date, exercise,
+  muscle_group, weight, reps, rir, e1rm, record` where `record` is
+  `weight`, `e1rm`, or `weight + e1rm`. All-time.
+- **Download backup (JSON)** — a full `{ app, version, exported_at,
+  sessions, bodyWeight }` file covering your entire history regardless of
+  the date-range filter. This is the file to keep as a real backup.
+  (No `prHistory` here — it's fully derived from `sessions`.)
 
-Both support a date-range filter so exporting a full year of data doesn't
-mean scrolling through everything at once.
+CSV and Copy JSON support a date-range filter so exporting a full year of
+data doesn't mean scrolling through everything at once.
+
+### Import
+
+The **Import JSON** card (Export tab) takes a backup file or pasted JSON —
+either the backup shape or the Copy JSON `{ sessions, bodyWeight }` shape
+(a `prHistory` key, if present, is ignored — it's derived), or a bare
+session array from an older export. Import is **strictly additive and
+idempotent**:
+
+- sessions match by date (created if absent); exercises match by name,
+  case-insensitively (created if absent)
+- a set is added only if an identical set (same weight/reps/RIR) for that
+  exercise on that date isn't already stored
+- a session's notes are only filled in when it currently has none — an
+  existing note is never overwritten
+- a body-weight entry is added only for a date that has none yet
+
+Nothing is ever edited in place or deleted, so re-importing the same file
+is a no-op and a half-finished import can simply be run again.
 
 ## What it does
 
-- **Log** — pick an exercise, see what you did last time, log sets
+- **Log** — pick an exercise, see what you did **last session** (today's
+  in-progress sets are never shown as "last time"), log sets
   (weight × reps × RIR), get flagged the moment you hit a new PR, and use
   the inline rest timer (90/120/180s presets or custom) without ever
   leaving the logging screen. Add free-text notes for the session.
 - **History** — chart of top-set weight and estimated 1RM over time for
   any exercise, with date-range filtering (8wk/12wk/6mo/1yr/all) so it
-  stays fast and readable even after a year of heavy training.
-- **PRs** — all-time heaviest set and best estimated 1RM per exercise.
+  stays fast and readable even after a year of heavy training. Also has an
+  **Edit exercises** card to rename an exercise or **merge** two entries
+  (combines their sets onto one exercise, nothing lost) when the same lift
+  got logged under two names.
+- **PRs** — all-time heaviest set and best estimated 1RM per exercise,
+  each with an expandable **progression** timeline: every set that set a
+  new weight and/or e1RM record, with its date.
 - **Volume** — sets per muscle group per week, with the same date-range
   filtering.
 - **Body Wt** — log body weight by date with a trend chart, kept separate
   from lifting data.
-- **Export** — CSV and JSON export, see above.
+- **Export / Import** — CSV and JSON export, a full downloadable backup
+  file, and additive JSON import. See above.
 
 ## Scale
 
