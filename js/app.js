@@ -15,9 +15,8 @@ const state = {
   exportRangeWeeks: 0,
   routines: [],
   todayExerciseIds: [],   // exercise_ids that already have a set logged today
-  activeRoutineId: null,  // routine currently shown as the Log-tab checklist
+  activeRoutineId: null,  // routine shown as the Log-tab checklist; 0 = "none for now"
   routineManuallyPicked: false, // true once the user taps a chip (stops clock auto-pick)
-  routineStripHidden: false,    // true after the user hits the strip's ✕
   expandedRoutineId: null, // which routine's editor is open on History
 };
 
@@ -64,6 +63,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.view).classList.add('active');
+    if (btn.dataset.view === 'view-log') renderRoutineStrip();
     if (btn.dataset.view === 'view-history') {
       refreshHistory();
       refreshSessionNotesList();
@@ -665,6 +665,8 @@ document.getElementById('edit-ex-rename-btn').addEventListener('click', async ()
   }
 });
 
+let mergeArmed = false;
+let mergeArmTimer;
 document.getElementById('merge-ex-btn').addEventListener('click', async () => {
   const status = document.getElementById('merge-ex-status');
   status.classList.remove('error');
@@ -678,12 +680,26 @@ document.getElementById('merge-ex-btn').addEventListener('click', async () => {
   }
   const fromEx = state.exercises.find((e) => e.id === fromId);
   const intoEx = state.exercises.find((e) => e.id === intoId);
-  const n = await db.countSetsForExercise(fromId);
-  const ok = confirm(
-    `Move ${n} set${n === 1 ? '' : 's'} from "${fromEx.name}" into "${intoEx.name}", then delete "${fromEx.name}"?\n\n` +
-    `Every set is kept - only the extra exercise entry is removed. This can't be undone from the app (re-import a backup to revert).`
-  );
-  if (!ok) return;
+
+  // Two-tap confirm instead of confirm() - some installed-PWA contexts
+  // suppress the dialog, which would make Merge silently do nothing.
+  if (!mergeArmed) {
+    const n = await db.countSetsForExercise(fromId);
+    mergeArmed = true;
+    btn.textContent = `Tap again: move ${n} set${n === 1 ? '' : 's'} & delete "${fromEx.name}"`;
+    btn.classList.add('danger-armed');
+    clearTimeout(mergeArmTimer);
+    mergeArmTimer = setTimeout(() => {
+      mergeArmed = false;
+      btn.textContent = 'Merge';
+      btn.classList.remove('danger-armed');
+    }, 5000);
+    return;
+  }
+  clearTimeout(mergeArmTimer);
+  mergeArmed = false;
+  btn.classList.remove('danger-armed');
+  btn.textContent = 'Merge';
 
   btn.disabled = true;
   status.textContent = 'Merging...';
@@ -744,49 +760,60 @@ function renderRoutineStrip() {
   checklistEl.innerHTML = '';
   clearBtn.classList.add('hidden');
 
-  if (!state.routines.length || state.routineStripHidden) {
+  if (!state.routines.length) {
     strip.classList.add('hidden');
     return;
   }
   strip.classList.remove('hidden');
 
   const todayLabel = db.todayDayLabel();
-  dayEl.textContent = `Today · ${todayLabel}`;
   const todays = state.routines.filter((r) => r.day === todayLabel);
+  const others = state.routines.filter((r) => r.day !== todayLabel);
 
   // Until the user taps a chip themselves, the strip follows the clock:
   // today's routine whose time tag matches morning/evening. After a manual
-  // pick, that choice sticks for the session.
-  let active = state.routines.find((r) => r.id === state.activeRoutineId) || null;
-  if (!state.routineManuallyPicked || !active) {
-    active = pickActiveRoutine(todays, new Date().getHours()) || active;
-    state.activeRoutineId = active ? active.id : null;
+  // pick that choice sticks; the strip's x sets activeRoutineId to 0
+  // ("none for now") without auto-picking again.
+  let active = null;
+  if (state.activeRoutineId !== 0) {
+    active = state.routines.find((r) => r.id === state.activeRoutineId) || null;
+    if (!state.routineManuallyPicked || !active) {
+      active = pickActiveRoutine(todays, new Date().getHours()) || active;
+      state.activeRoutineId = active ? active.id : null;
+    }
   }
 
-  if (!todays.length && !active) {
-    const pick = document.createElement('select');
-    pick.className = 'routine-strip-pick';
-    pick.innerHTML =
-      '<option value="">Start a routine…</option>' +
-      state.routines.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
-    pick.addEventListener('change', () => { if (pick.value) activateRoutine(Number(pick.value)); });
-    chipsEl.appendChild(pick);
-    return;
-  }
+  dayEl.textContent = todays.length
+    ? `Today · ${todayLabel}`
+    : `Today · ${todayLabel} · no routine set — tap one to use it`;
 
-  const chipRoutines = [...todays];
-  if (active && !chipRoutines.some((r) => r.id === active.id)) chipRoutines.unshift(active);
-  for (const r of chipRoutines) {
+  const mkChip = (r, cls) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'routine-chip' + (active && r.id === active.id ? ' active' : '');
+    b.className = 'routine-chip' + cls;
     b.textContent = r.time ? `${r.name} · ${TIME_FULL[r.time]}` : r.name;
     b.addEventListener('click', () => activateRoutine(r.id));
-    chipsEl.appendChild(b);
+    return b;
+  };
+  for (const r of todays) {
+    chipsEl.appendChild(mkChip(r, active && r.id === active.id ? ' active' : ''));
+  }
+  // routine that's active but isn't one of today's (a manual pick) shows too
+  if (active && !todays.some((r) => r.id === active.id)) {
+    chipsEl.appendChild(mkChip(active, ' active'));
+  }
+  for (const r of others) {
+    if (active && r.id === active.id) continue;
+    chipsEl.appendChild(mkChip(r, ' other'));
+  }
+
+  if (!active) {
+    checklistEl.innerHTML =
+      '<span class="empty-note" style="padding:0">Tap a routine above to load it as a checklist.</span>';
+    return;
   }
   clearBtn.classList.remove('hidden');
 
-  if (!active) return;
   const selVal = document.getElementById('exercise-select').value;
   active.exercises.forEach((ex, i) => {
     const item = document.createElement('button');
@@ -813,7 +840,6 @@ function renderRoutineStrip() {
 function activateRoutine(id) {
   state.activeRoutineId = id;
   state.routineManuallyPicked = true;
-  state.routineStripHidden = false;
   renderRoutineStrip();
 }
 
@@ -825,7 +851,8 @@ function selectRoutineExercise(exId) {
 }
 
 document.getElementById('routine-strip-clear').addEventListener('click', () => {
-  state.routineStripHidden = true;
+  state.activeRoutineId = 0; // "none for now" - chips stay so you can re-pick
+  state.routineManuallyPicked = true;
   renderRoutineStrip();
 });
 
@@ -991,19 +1018,39 @@ function buildRoutineEditorItem(r) {
     renderRoutineStrip();
     setRoutineStatus(`Photocopied to "${name}" — edit the copy freely, the original is untouched.`);
   });
+  // Inline two-tap delete - no confirm() dialog, which some installed-PWA
+  // contexts silently suppress (that's the "Delete does nothing" bug).
   const delBtn = document.createElement('button');
   delBtn.type = 'button';
   delBtn.className = 'secondary';
   delBtn.textContent = 'Delete';
+  let armed = false;
+  let armTimer;
   delBtn.addEventListener('click', async () => {
-    if (!confirm(`Delete the routine "${r.name}"? Your logged workouts are not affected.`)) return;
-    await db.deleteRoutine(r.id);
-    if (state.activeRoutineId === r.id) state.activeRoutineId = null;
-    if (state.expandedRoutineId === r.id) state.expandedRoutineId = null;
-    await loadRoutines();
-    renderRoutinesEditor();
-    renderRoutineStrip();
-    setRoutineStatus('Deleted.');
+    if (!armed) {
+      armed = true;
+      delBtn.textContent = 'Tap again to delete';
+      delBtn.classList.add('danger-armed');
+      clearTimeout(armTimer);
+      armTimer = setTimeout(() => {
+        armed = false;
+        delBtn.textContent = 'Delete';
+        delBtn.classList.remove('danger-armed');
+      }, 4000);
+      return;
+    }
+    clearTimeout(armTimer);
+    try {
+      await db.deleteRoutine(r.id);
+      if (state.activeRoutineId === r.id) state.activeRoutineId = null;
+      if (state.expandedRoutineId === r.id) state.expandedRoutineId = null;
+      await loadRoutines();
+      renderRoutinesEditor();
+      renderRoutineStrip();
+      setRoutineStatus('Deleted. Your logged workouts are not affected.');
+    } catch (err) {
+      setRoutineStatus(err.message, true);
+    }
   });
   actions.append(dupBtn, delBtn);
 

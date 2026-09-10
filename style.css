@@ -615,6 +615,10 @@ canvas { width: 100%; height: auto; }
   color: var(--amber);
   border-color: var(--amber);
 }
+.routine-chip.other {
+  opacity: 0.6;
+  border-style: dashed;
+}
 .routine-strip-pick {
   width: auto;
   margin: 0;
@@ -730,6 +734,13 @@ canvas { width: 100%; height: auto; }
   margin-top: 10px;
 }
 .routine-item-actions button { flex: 1; }
+
+/* two-tap destructive confirm (used where confirm() can't be trusted) */
+button.danger-armed {
+  border: 1px solid var(--red) !important;
+  color: var(--red) !important;
+  background: rgba(255, 23, 68, 0.12) !important;
+}
 
 /* ---------- body weight ---------- */
 
