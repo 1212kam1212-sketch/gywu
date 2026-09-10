@@ -48,6 +48,17 @@
       </div>
     </div>
 
+    <!-- Routine strip: shows today's routine(s) as a tap-down checklist.
+         Hidden entirely when no routines exist. -->
+    <div id="routine-strip" class="routine-strip hidden">
+      <div class="routine-strip-head">
+        <span id="routine-strip-day" class="routine-strip-day"></span>
+        <div id="routine-strip-chips" class="routine-strip-chips"></div>
+        <button type="button" id="routine-strip-clear" class="routine-strip-clear hidden">✕</button>
+      </div>
+      <div id="routine-strip-checklist" class="routine-strip-checklist"></div>
+    </div>
+
     <div class="card">
       <label class="field-label" for="exercise-select">Exercise</label>
       <select id="exercise-select"></select>
@@ -146,6 +157,14 @@
     <div class="card">
       <div class="card-title">Session notes</div>
       <div id="session-notes-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Routines</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">An ordered list of exercises for a training day. On its weekday the Log tab shows it as a checklist - tap straight down the list instead of hunting the dropdown. Routines hold no weights or reps, so editing one never touches your logged sets.</div>
+      <div id="routines-list"></div>
+      <button id="routine-new-btn" type="button" class="blue full-width">New routine</button>
+      <div id="routine-status" class="notes-save-status"></div>
     </div>
 
     <div class="card">

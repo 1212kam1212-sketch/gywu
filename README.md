@@ -18,7 +18,7 @@ works offline, and updates itself when you're back online.
 ```
 index.html, style.css        - app shell
 js/lib.js                    - pure logic (1RM, PR detection, volume, exports) - unit tested
-js/db.js                     - IndexedDB data layer (exercises, sessions, sets, bodyWeight)
+js/db.js                     - IndexedDB data layer (exercises, sessions, sets, bodyWeight, routines)
 js/app.js                    - UI wiring
 manifest.json, sw.js, icons/ - PWA install + offline support
 tests/                       - node:test unit tests for js/lib.js
@@ -91,16 +91,16 @@ from the **Export** tab:
 
 - **Download CSV** — one row per set: `date, exercise, muscle_group,
   weight, reps, rir, e1rm`. Opens directly in any spreadsheet app.
-- **Copy JSON** — copies `{ sessions, bodyWeight, prHistory }` to the
-  clipboard, meant to be pasted directly into a chat with Claude (or any
-  LLM) for custom graphs/analysis. `prHistory` is always all-time.
+- **Copy JSON** — copies `{ sessions, bodyWeight, routines, prHistory }`
+  to the clipboard, meant to be pasted directly into a chat with Claude
+  (or any LLM) for custom graphs/analysis. `prHistory` is always all-time.
 - **Download PR history CSV** — one row per PR milestone: `date, exercise,
   muscle_group, weight, reps, rir, e1rm, record` where `record` is
   `weight`, `e1rm`, or `weight + e1rm`. All-time.
 - **Download backup (JSON)** — a full `{ app, version, exported_at,
-  sessions, bodyWeight }` file covering your entire history regardless of
-  the date-range filter. This is the file to keep as a real backup.
-  (No `prHistory` here — it's fully derived from `sessions`.)
+  sessions, bodyWeight, routines }` file covering your entire history
+  regardless of the date-range filter. This is the file to keep as a real
+  backup. (No `prHistory` here — it's fully derived from `sessions`.)
 
 CSV and Copy JSON support a date-range filter so exporting a full year of
 data doesn't mean scrolling through everything at once.
@@ -108,10 +108,10 @@ data doesn't mean scrolling through everything at once.
 ### Import
 
 The **Import JSON** card (Export tab) takes a backup file or pasted JSON —
-either the backup shape or the Copy JSON `{ sessions, bodyWeight }` shape
-(a `prHistory` key, if present, is ignored — it's derived), or a bare
-session array from an older export. Import is **strictly additive and
-idempotent**:
+either the backup shape or the Copy JSON `{ sessions, bodyWeight, routines }`
+shape (a `prHistory` key, if present, is ignored — it's derived), or a
+bare session array from an older export. Import is **strictly additive
+and idempotent**:
 
 - sessions match by date (created if absent); exercises match by name,
   case-insensitively (created if absent)
@@ -120,6 +120,8 @@ idempotent**:
 - a session's notes are only filled in when it currently has none — an
   existing note is never overwritten
 - a body-weight entry is added only for a date that has none yet
+- a routine is added only if no routine with that name exists yet — an
+  existing routine of the same name is left exactly as it is
 
 Nothing is ever edited in place or deleted, so re-importing the same file
 is a no-op and a half-finished import can simply be run again.
@@ -130,13 +132,24 @@ is a no-op and a half-finished import can simply be run again.
   in-progress sets are never shown as "last time"), log sets
   (weight × reps × RIR), get flagged the moment you hit a new PR, and use
   the inline rest timer (90/120/180s presets or custom) without ever
-  leaving the logging screen. Add free-text notes for the session.
+  leaving the logging screen. Add free-text notes for the session. If a
+  **routine** is set for today, a thin strip shows it as a checklist —
+  tap an exercise to load it in the picker, and it ticks off once a set
+  is logged.
+- **Routines** (managed on the History tab) — a named, ordered list of
+  exercises for a training day, tagged with a weekday and an optional
+  Morning/Evening slot for two-a-days. On its weekday the Log strip shows
+  it; when two are set for one day the one matching the current time of
+  day opens first (until you tap the other). Routines hold **no** weights
+  or reps, so editing one — rename, reorder with ▲▼, add/remove an
+  exercise, or **Duplicate** to fork next mesocycle's version — never
+  touches a logged set.
 - **History** — chart of top-set weight and estimated 1RM over time for
   any exercise, with date-range filtering (8wk/12wk/6mo/1yr/all) so it
   stays fast and readable even after a year of heavy training. Also has an
   **Edit exercises** card to rename an exercise or **merge** two entries
   (combines their sets onto one exercise, nothing lost) when the same lift
-  got logged under two names.
+  got logged under two names, and the **Routines** editor described above.
 - **PRs** — all-time heaviest set and best estimated 1RM per exercise,
   each with an expandable **progression** timeline: every set that set a
   new weight and/or e1RM record, with its date.
@@ -153,3 +166,13 @@ The IndexedDB layer is indexed for a full year of heavy use (300+
 sessions, several thousand sets): exercise history and weekly volume
 queries use compound indexes and date-range bounds rather than scanning
 every set on every view.
+
+## Schema versions
+
+`DB_VERSION` in `js/db.js` is currently **2**. The `onupgradeneeded`
+handler only ever *creates* stores it doesn't already find, so bumping the
+version on an existing database adds the new store(s) and leaves every
+existing store and its rows untouched:
+
+- **v1** — `exercises`, `sessions`, `sets`, `bodyWeight`
+- **v2** — adds `routines`

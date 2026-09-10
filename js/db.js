@@ -6,6 +6,8 @@
 //   sessions    { id, date (unique, YYYY-MM-DD), notes }
 //   sets        { id, session_id, exercise_id, date, weight, reps, rir, set_order, created_at }
 //   bodyWeight  { id, date, weight }
+//   routines    { id, name (unique), day ('Mon'..'Sun'|null), time ('am'|'pm'|null),
+//                 exercise_ids [int], created_at }  -- planning only, never training data
 //
 // `date` is denormalized onto each set from its parent session at insert
 // time (SQLite could join sessions->sets to filter by date; IndexedDB
@@ -16,7 +18,16 @@
 import { estimate1RM, roundE1RM, detectPR } from './lib.js';
 
 const DB_NAME = 'gywu';
-const DB_VERSION = 1;
+// v2 adds the `routines` store. The upgrade handler below only ever *creates*
+// stores it doesn't find, so bumping the version on an existing v1 database
+// just adds `routines` and leaves every existing store and its data alone.
+const DB_VERSION = 2;
+
+export const ROUTINE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// JS Date.getDay() is 0=Sun..6=Sat; map it onto ROUTINE_DAYS labels.
+export function todayDayLabel(d = new Date()) {
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+}
 
 const STARTER_EXERCISES = [
   ['Bench Press', 'Chest'],
@@ -85,6 +96,12 @@ export function openDB() {
       if (!db.objectStoreNames.contains('bodyWeight')) {
         const store = db.createObjectStore('bodyWeight', { keyPath: 'id', autoIncrement: true });
         store.createIndex('by_date', 'date');
+      }
+
+      // v2
+      if (!db.objectStoreNames.contains('routines')) {
+        const store = db.createObjectStore('routines', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('by_name', 'name', { unique: true });
       }
     };
 
@@ -249,8 +266,140 @@ export async function mergeExercises(sourceId, targetId) {
     await req2promise(tx.objectStore('exercises').delete(sourceId));
     await tx2promise(tx);
   }
+
+  // Repoint any routine that referenced the now-deleted source exercise.
+  {
+    const tx = db.transaction('routines', 'readwrite');
+    const store = tx.objectStore('routines');
+    const routines = await req2promise(store.getAll());
+    for (const r of routines) {
+      if (!Array.isArray(r.exercise_ids) || !r.exercise_ids.includes(sourceId)) continue;
+      const seen = new Set();
+      r.exercise_ids = r.exercise_ids
+        .map((id) => (id === sourceId ? targetId : id))
+        .filter((id) => (seen.has(id) ? false : seen.add(id)));
+      store.put(r);
+    }
+    await tx2promise(tx);
+  }
+
   invalidateExerciseCache();
   return { movedCount, sessionsAffected: affectedSessions.size };
+}
+
+// ---------- routines (planning only - no weights/reps/sets) ----------
+
+function sanitizeRoutineFields({ name, day, time, exercise_ids }) {
+  name = (name || '').trim();
+  if (!name) throw new Error('A routine name is required');
+  day = ROUTINE_DAYS.includes(day) ? day : null;
+  time = time === 'am' || time === 'pm' ? time : null;
+  const seen = new Set();
+  exercise_ids = (Array.isArray(exercise_ids) ? exercise_ids : [])
+    .map(Number)
+    .filter((id) => Number.isInteger(id) && id > 0 && !seen.has(id) && seen.add(id));
+  return { name, day, time, exercise_ids };
+}
+
+// Returns routines with their exercise_ids resolved to
+// [{ id, name, muscle_group, missing? }], ordered by day, then am before pm,
+// then creation order.
+export async function listRoutines() {
+  const db = await openDB();
+  const tx = db.transaction('routines', 'readonly');
+  const rows = await req2promise(tx.objectStore('routines').getAll());
+  const exMap = await getExerciseMap();
+
+  const dayIndex = (d) => (d ? ROUTINE_DAYS.indexOf(d) : 99);
+  const timeIndex = (t) => (t === 'am' ? 0 : t === 'pm' ? 1 : 2);
+  rows.sort(
+    (a, b) =>
+      dayIndex(a.day) - dayIndex(b.day) ||
+      timeIndex(a.time) - timeIndex(b.time) ||
+      (a.created_at || '').localeCompare(b.created_at || '')
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    day: r.day || null,
+    time: r.time || null,
+    exercises: (r.exercise_ids || []).map((id) => {
+      const ex = exMap.get(id);
+      return ex
+        ? { id, name: ex.name, muscle_group: ex.muscle_group }
+        : { id, name: '(deleted exercise)', muscle_group: '', missing: true };
+    }),
+  }));
+}
+
+export async function getRoutinesForDay(dayLabel) {
+  return (await listRoutines()).filter((r) => r.day === dayLabel);
+}
+
+export async function createRoutine(fields) {
+  const clean = sanitizeRoutineFields(fields);
+  const db = await openDB();
+  const tx = db.transaction('routines', 'readwrite');
+  const store = tx.objectStore('routines');
+  if (await req2promise(store.index('by_name').get(clean.name))) {
+    throw new Error('A routine with that name already exists');
+  }
+  const id = await req2promise(store.add({ ...clean, created_at: new Date().toISOString() }));
+  await tx2promise(tx);
+  return id;
+}
+
+export async function updateRoutine(id, fields) {
+  id = Number(id);
+  const db = await openDB();
+  const tx = db.transaction('routines', 'readwrite');
+  const store = tx.objectStore('routines');
+  const row = await req2promise(store.get(id));
+  if (!row) throw new Error('Routine not found');
+  const clean = sanitizeRoutineFields({
+    name: fields.name ?? row.name,
+    day: fields.day !== undefined ? fields.day : row.day,
+    time: fields.time !== undefined ? fields.time : row.time,
+    exercise_ids: fields.exercise_ids !== undefined ? fields.exercise_ids : row.exercise_ids,
+  });
+  const clash = await req2promise(store.index('by_name').get(clean.name));
+  if (clash && clash.id !== id) throw new Error('A routine with that name already exists');
+  await req2promise(store.put({ ...row, ...clean }));
+  await tx2promise(tx);
+}
+
+export async function duplicateRoutine(id) {
+  id = Number(id);
+  const db = await openDB();
+  const tx = db.transaction('routines', 'readwrite');
+  const store = tx.objectStore('routines');
+  const row = await req2promise(store.get(id));
+  if (!row) throw new Error('Routine not found');
+
+  const existing = new Set((await req2promise(store.getAll())).map((r) => r.name));
+  let name = `${row.name} (copy)`;
+  let n = 2;
+  while (existing.has(name)) name = `${row.name} (copy ${n++})`;
+
+  const newId = await req2promise(
+    store.add({
+      name,
+      day: row.day || null,
+      time: row.time || null,
+      exercise_ids: [...(row.exercise_ids || [])],
+      created_at: new Date().toISOString(),
+    })
+  );
+  await tx2promise(tx);
+  return { id: newId, name };
+}
+
+export async function deleteRoutine(id) {
+  const db = await openDB();
+  const tx = db.transaction('routines', 'readwrite');
+  await req2promise(tx.objectStore('routines').delete(Number(id)));
+  await tx2promise(tx);
 }
 
 // ---------- sessions ----------
@@ -595,9 +744,11 @@ export async function deleteBodyWeight(id) {
 //   - session notes are only filled in when the stored session has none - an
 //     existing non-empty note is never overwritten
 //   - a body-weight entry is added only for a date that has none yet
+//   - a routine is added only if no routine with that name exists yet; an
+//     existing routine of the same name is left exactly as it is
 // Nothing is ever updated-in-place or deleted, so re-importing the same file
 // is a no-op and a half-finished import can just be run again.
-export async function importData({ sessions = [], bodyWeight = [] } = {}) {
+export async function importData({ sessions = [], bodyWeight = [], routines = [] } = {}) {
   const db = await openDB();
   const report = {
     sessionsCreated: 0, sessionsMatched: 0,
@@ -605,6 +756,7 @@ export async function importData({ sessions = [], bodyWeight = [] } = {}) {
     setsAdded: 0, setsSkipped: 0,
     notesFilled: 0, notesSkipped: 0,
     bodyWeightAdded: 0, bodyWeightSkipped: 0,
+    routinesAdded: 0, routinesSkipped: 0,
   };
 
   // lowercased name -> exercise id, primed once and kept current as we create.
@@ -703,6 +855,38 @@ export async function importData({ sessions = [], bodyWeight = [] } = {}) {
       report.bodyWeightAdded++;
     }
     await tx2promise(tx);
+  }
+
+  // --- routines ---
+  if (routines.length) {
+    const existingNames = new Set();
+    {
+      const tx = db.transaction('routines', 'readonly');
+      for (const r of await req2promise(tx.objectStore('routines').getAll())) {
+        existingNames.add(r.name.toLowerCase());
+      }
+    }
+    for (const r of routines) {
+      const name = (r.name || '').trim();
+      if (!name || existingNames.has(name.toLowerCase())) {
+        report.routinesSkipped++;
+        continue;
+      }
+      const exercise_ids = [];
+      for (const exName of r.exercises || []) {
+        let exId = nameToId.get(String(exName).toLowerCase());
+        if (!exId) {
+          const created = await createExercise(exName, 'Other');
+          exId = created.id;
+          nameToId.set(String(exName).toLowerCase(), exId);
+          report.exercisesCreated++;
+        }
+        exercise_ids.push(exId);
+      }
+      await createRoutine({ name, day: r.day || null, time: r.time || null, exercise_ids });
+      existingNames.add(name.toLowerCase());
+      report.routinesAdded++;
+    }
   }
 
   return report;

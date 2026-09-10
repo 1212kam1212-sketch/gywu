@@ -227,19 +227,45 @@ export function toJSONExport(sessions) {
   }));
 }
 
+// ---------- routines ----------
+
+export const ROUTINE_DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// From the routines already filtered to today, pick the one to auto-open:
+// with several, prefer the one whose time tag ('am' / 'pm') matches the
+// current hour; otherwise just the first. Returns null for an empty list.
+export function pickActiveRoutine(todaysRoutines, hour) {
+  const list = todaysRoutines || [];
+  if (list.length <= 1) return list[0] || null;
+  const bucket = hour < 12 ? 'am' : 'pm';
+  return list.find((r) => r.time === bucket) || list[0];
+}
+
+// Shape routines for export: exercise ids become names, in order.
+export function toRoutinesExport(routines) {
+  return (routines || []).map((r) => ({
+    name: r.name,
+    day: r.day || null,
+    time: r.time || null,
+    exercises: (r.exercises || []).map((e) => e.name),
+  }));
+}
+
 // ---------- import / backup ----------
 
-// Wrap the JSON-export session array plus body-weight rows into one
-// self-describing object for the downloadable full backup. toJSONExport
-// stays a bare array (that output also gets pasted straight into chats),
-// so the file that must round-trip *everything* gets its own shape here.
-export function toBackupJSON(sessions, bodyWeight, exportedAtISO) {
+// Wrap the JSON-export session array plus body-weight rows and routines
+// into one self-describing object for the downloadable full backup.
+// toJSONExport stays a bare array (that output also gets pasted straight
+// into chats), so the file that must round-trip *everything* gets its own
+// shape here. `routines` is optional and last so older callers are unaffected.
+export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines) {
   return {
     app: 'FORGED',
     version: 1,
     exported_at: exportedAtISO || new Date().toISOString(),
     sessions: toJSONExport(sessions),
     bodyWeight: (bodyWeight || []).map((b) => ({ date: b.date, weight: b.weight })),
+    routines: toRoutinesExport(routines),
   };
 }
 
@@ -250,11 +276,12 @@ function importFail(msg) {
 }
 
 // Parse + validate a pasted / loaded import payload. Accepts either the
-// bare session array produced by toJSONExport, or a { sessions, bodyWeight }
-// object (the toBackupJSON shape). Returns a normalized
-// { sessions, bodyWeight, summary } with every field type-checked, or
-// throws an Error with a human-readable reason. Touches no storage - the
-// caller hands the result to db.importData().
+// bare session array produced by toJSONExport, or a
+// { sessions, bodyWeight, routines } object (the toBackupJSON shape).
+// Returns a normalized { sessions, bodyWeight, routines, summary } with
+// every field type-checked, or throws an Error with a human-readable
+// reason. Touches no storage - the caller hands the result to
+// db.importData().
 export function parseImportJSON(text) {
   let raw;
   try {
@@ -263,13 +290,15 @@ export function parseImportJSON(text) {
     importFail('that is not valid JSON.');
   }
 
-  let sessionsIn, bodyWeightIn;
+  let sessionsIn, bodyWeightIn, routinesIn;
   if (Array.isArray(raw)) {
     sessionsIn = raw;
     bodyWeightIn = [];
+    routinesIn = [];
   } else if (raw && typeof raw === 'object' && Array.isArray(raw.sessions)) {
     sessionsIn = raw.sessions;
     bodyWeightIn = Array.isArray(raw.bodyWeight) ? raw.bodyWeight : [];
+    routinesIn = Array.isArray(raw.routines) ? raw.routines : [];
   } else {
     importFail('expected a JSON array of sessions, or an object with a "sessions" array.');
   }
@@ -317,6 +346,19 @@ export function parseImportJSON(text) {
     return { date: b.date, weight };
   });
 
+  const routines = routinesIn.map((r, i) => {
+    const where = `routine ${i + 1}`;
+    if (!r || typeof r !== 'object') importFail(`${where} is not an object.`);
+    const name = String(r.name ?? '').trim();
+    if (!name) importFail(`${where} has no name.`);
+    const day = ROUTINE_DAY_LABELS.includes(r.day) ? r.day : null;
+    const time = r.time === 'am' || r.time === 'pm' ? r.time : null;
+    const exercises = (Array.isArray(r.exercises) ? r.exercises : [])
+      .map((e) => String(e ?? '').trim())
+      .filter(Boolean);
+    return { name, day, time, exercises };
+  });
+
   const setCount = sessions.reduce(
     (n, s) => n + s.exercises.reduce((m, e) => m + e.sets.length, 0),
     0
@@ -324,6 +366,12 @@ export function parseImportJSON(text) {
   return {
     sessions,
     bodyWeight,
-    summary: { sessions: sessions.length, sets: setCount, bodyWeight: bodyWeight.length },
+    routines,
+    summary: {
+      sessions: sessions.length,
+      sets: setCount,
+      bodyWeight: bodyWeight.length,
+      routines: routines.length,
+    },
   };
 }
