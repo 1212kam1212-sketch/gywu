@@ -281,6 +281,12 @@ button.full-width { width: 100%; }
   color: var(--muted);
   font-family: var(--mono);
 }
+/* small ordinal marker inside a chip - kept tiny so it never grows the chip */
+.chip-idx {
+  font-size: 0.68rem;
+  opacity: 0.5;
+  margin-right: 1px;
+}
 
 .exercise-block {
   margin-bottom: 14px;

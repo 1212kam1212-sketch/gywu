@@ -139,12 +139,18 @@ async function onExerciseChange() {
     document.getElementById('last-time-date').textContent = prettyDate(last.date);
     const chips = document.getElementById('last-time-sets');
     chips.innerHTML = '';
-    for (const s of last.sets) {
+    // last.sets is already ordered by set_order, i.e. the order they were done
+    last.sets.forEach((s, i) => {
       const chip = document.createElement('span');
       chip.className = 'chip';
-      chip.textContent = `${s.weight} x ${s.reps}${s.rir !== null && s.rir !== undefined ? ` @${s.rir}RIR` : ''}`;
+      const idx = document.createElement('span');
+      idx.className = 'chip-idx';
+      idx.textContent = `${i + 1}) `;
+      chip.appendChild(idx);
+      const rir = s.rir !== null && s.rir !== undefined ? ` @${s.rir}RIR` : '';
+      chip.appendChild(document.createTextNode(`${s.weight} x ${s.reps}${rir}`));
       chips.appendChild(chip);
-    }
+    });
   }
   document.getElementById('pr-banner').classList.add('hidden');
 }
