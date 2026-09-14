@@ -1,6 +1,9 @@
 ﻿// app.js — UI wiring. Imports pure logic from lib.js and storage from db.js.
 
-import { toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV } from './lib.js';
+import {
+  toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV,
+  toRoutinesExport, pickActiveRoutine,
+} from './lib.js';
 import * as db from './db.js';
 
 const state = {
@@ -10,6 +13,11 @@ const state = {
   historyRangeWeeks: 52,
   volumeRangeWeeks: 8,
   exportRangeWeeks: 0,
+  routines: [],
+  todayExerciseIds: [],   // exercise_ids that already have a set logged today
+  activeRoutineId: null,  // routine shown as the Log-tab checklist; 0 = "none for now"
+  routineManuallyPicked: false, // true once the user taps a chip (stops clock auto-pick)
+  expandedRoutineId: null, // which routine's editor is open on History
 };
 
 // ---------- small helpers ----------
@@ -42,6 +50,18 @@ function rangeFromWeeks(weeks) {
   return { startDate: daysAgoStr(weeks * 7), endDate: todayStr() };
 }
 
+// Exercise names and muscle groups are free text (typed via "+ Add custom
+// exercise", or arbitrary in an imported JSON file) - build the little
+// colored tag with DOM methods rather than string-interpolated innerHTML,
+// so an exercise/group name can never be parsed as markup.
+function muscleTag(group) {
+  const tag = document.createElement('span');
+  tag.className = 'muscle-tag';
+  tag.dataset.group = group;
+  tag.textContent = group;
+  return tag;
+}
+
 function setActivePreset(containerEl, btnEl) {
   containerEl.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
   btnEl.classList.add('active');
@@ -55,10 +75,12 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.view).classList.add('active');
+    if (btn.dataset.view === 'view-log') renderRoutineStrip();
     if (btn.dataset.view === 'view-history') {
       refreshHistory();
       refreshSessionNotesList();
       refreshExerciseEditor();
+      renderRoutinesEditor();
     }
     if (btn.dataset.view === 'view-prs') refreshPRs();
     if (btn.dataset.view === 'view-volume') refreshVolume();
@@ -153,6 +175,7 @@ async function onExerciseChange() {
     });
   }
   document.getElementById('pr-banner').classList.add('hidden');
+  renderRoutineStrip(); // keep the checklist's "current" marker in sync
 }
 
 async function ensureTodaySession() {
@@ -206,7 +229,8 @@ async function refreshTodaySession() {
       const block = document.createElement('div');
       block.className = 'exercise-block';
       const h4 = document.createElement('h4');
-      h4.innerHTML = `${ex.exercise_name} <span class="muscle-tag" data-group="${ex.muscle_group}">${ex.muscle_group}</span>`;
+      h4.appendChild(document.createTextNode(ex.exercise_name + ' '));
+      h4.appendChild(muscleTag(ex.muscle_group));
       block.appendChild(h4);
       for (const s of ex.sets) {
         const row = document.createElement('div');
@@ -227,6 +251,10 @@ async function refreshTodaySession() {
   }
 
   document.getElementById('session-notes').value = detail.notes || '';
+
+  // routine checklist ticks off exercises that now have a set today
+  state.todayExerciseIds = detail.exercises.map((ex) => ex.exercise_id);
+  renderRoutineStrip();
 }
 
 // ---------- session notes (feature 3) ----------
@@ -650,6 +678,8 @@ document.getElementById('edit-ex-rename-btn').addEventListener('click', async ()
   }
 });
 
+let mergeArmed = false;
+let mergeArmTimer;
 document.getElementById('merge-ex-btn').addEventListener('click', async () => {
   const status = document.getElementById('merge-ex-status');
   status.classList.remove('error');
@@ -663,12 +693,26 @@ document.getElementById('merge-ex-btn').addEventListener('click', async () => {
   }
   const fromEx = state.exercises.find((e) => e.id === fromId);
   const intoEx = state.exercises.find((e) => e.id === intoId);
-  const n = await db.countSetsForExercise(fromId);
-  const ok = confirm(
-    `Move ${n} set${n === 1 ? '' : 's'} from "${fromEx.name}" into "${intoEx.name}", then delete "${fromEx.name}"?\n\n` +
-    `Every set is kept - only the extra exercise entry is removed. This can't be undone from the app (re-import a backup to revert).`
-  );
-  if (!ok) return;
+
+  // Two-tap confirm instead of confirm() - some installed-PWA contexts
+  // suppress the dialog, which would make Merge silently do nothing.
+  if (!mergeArmed) {
+    const n = await db.countSetsForExercise(fromId);
+    mergeArmed = true;
+    btn.textContent = `Tap again: move ${n} set${n === 1 ? '' : 's'} & delete "${fromEx.name}"`;
+    btn.classList.add('danger-armed');
+    clearTimeout(mergeArmTimer);
+    mergeArmTimer = setTimeout(() => {
+      mergeArmed = false;
+      btn.textContent = 'Merge';
+      btn.classList.remove('danger-armed');
+    }, 5000);
+    return;
+  }
+  clearTimeout(mergeArmTimer);
+  mergeArmed = false;
+  btn.classList.remove('danger-armed');
+  btn.textContent = 'Merge';
 
   btn.disabled = true;
   status.textContent = 'Merging...';
@@ -693,6 +737,402 @@ document.getElementById('merge-ex-btn').addEventListener('click', async () => {
   }
 });
 
+// ---------- routines ----------
+//
+// A routine is an ordered exercise list tagged with a weekday and (for
+// two-a-days) a morning/evening slot. It holds NO training data. On the
+// Log tab it renders as a checklist strip (renderRoutineStrip): tapping an
+// item just selects that exercise in the picker you already use, and items
+// tick off as sets get logged. Editing lives on the History tab
+// (renderRoutinesEditor). See db.js for storage + the v2 upgrade.
+
+const DAY_FULL = {
+  Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday',
+  Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday',
+};
+const TIME_FULL = { am: 'Morning', pm: 'Evening' };
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadRoutines() {
+  state.routines = await db.listRoutines();
+}
+
+// ----- Log-tab strip -----
+
+function renderRoutineStrip() {
+  const strip = document.getElementById('routine-strip');
+  const chipsEl = document.getElementById('routine-strip-chips');
+  const checklistEl = document.getElementById('routine-strip-checklist');
+  const dayEl = document.getElementById('routine-strip-day');
+  const clearBtn = document.getElementById('routine-strip-clear');
+
+  chipsEl.innerHTML = '';
+  checklistEl.innerHTML = '';
+  clearBtn.classList.add('hidden');
+
+  if (!state.routines.length) {
+    strip.classList.add('hidden');
+    return;
+  }
+  strip.classList.remove('hidden');
+
+  const todayLabel = db.todayDayLabel();
+  const todays = state.routines.filter((r) => r.day === todayLabel);
+  const others = state.routines.filter((r) => r.day !== todayLabel);
+
+  // Until the user taps a chip themselves, the strip follows the clock:
+  // today's routine whose time tag matches morning/evening. After a manual
+  // pick that choice sticks; the strip's x sets activeRoutineId to 0
+  // ("none for now") without auto-picking again.
+  let active = null;
+  if (state.activeRoutineId !== 0) {
+    active = state.routines.find((r) => r.id === state.activeRoutineId) || null;
+    if (!state.routineManuallyPicked || !active) {
+      active = pickActiveRoutine(todays, new Date().getHours()) || active;
+      state.activeRoutineId = active ? active.id : null;
+    }
+  }
+
+  dayEl.textContent = todays.length
+    ? `Today · ${todayLabel}`
+    : `Today · ${todayLabel} · no routine set — tap one to use it`;
+
+  const mkChip = (r, cls) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'routine-chip' + cls;
+    b.textContent = r.time ? `${r.name} · ${TIME_FULL[r.time]}` : r.name;
+    b.addEventListener('click', () => activateRoutine(r.id));
+    return b;
+  };
+  for (const r of todays) {
+    chipsEl.appendChild(mkChip(r, active && r.id === active.id ? ' active' : ''));
+  }
+  // routine that's active but isn't one of today's (a manual pick) shows too
+  if (active && !todays.some((r) => r.id === active.id)) {
+    chipsEl.appendChild(mkChip(active, ' active'));
+  }
+  for (const r of others) {
+    if (active && r.id === active.id) continue;
+    chipsEl.appendChild(mkChip(r, ' other'));
+  }
+
+  if (!active) {
+    checklistEl.innerHTML =
+      '<span class="empty-note" style="padding:0">Tap a routine above to load it as a checklist.</span>';
+    return;
+  }
+  clearBtn.classList.remove('hidden');
+
+  const selVal = document.getElementById('exercise-select').value;
+  active.exercises.forEach((ex, i) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'routine-check-item';
+    const done = state.todayExerciseIds.includes(ex.id);
+    if (done) item.classList.add('done');
+    if (String(ex.id) === String(selVal)) item.classList.add('current');
+    const mark = document.createElement('span');
+    mark.className = 'rci-mark';
+    mark.textContent = done ? '✓' : `${i + 1})`;
+    item.appendChild(mark);
+    item.appendChild(document.createTextNode(ex.name));
+    if (ex.missing) {
+      item.disabled = true;
+      item.classList.add('missing');
+    } else {
+      item.addEventListener('click', () => selectRoutineExercise(ex.id));
+    }
+    checklistEl.appendChild(item);
+  });
+}
+
+function activateRoutine(id) {
+  state.activeRoutineId = id;
+  state.routineManuallyPicked = true;
+  renderRoutineStrip();
+}
+
+function selectRoutineExercise(exId) {
+  const sel = document.getElementById('exercise-select');
+  sel.value = String(exId);
+  onExerciseChange();
+  document.getElementById('input-weight').focus();
+}
+
+document.getElementById('routine-strip-clear').addEventListener('click', () => {
+  state.activeRoutineId = 0; // "none for now" - chips stay so you can re-pick
+  state.routineManuallyPicked = true;
+  renderRoutineStrip();
+});
+
+// ----- History-tab editor -----
+
+function setRoutineStatus(msg, isErr) {
+  const el = document.getElementById('routine-status');
+  el.classList.toggle('error', !!isErr);
+  el.textContent = msg || '';
+  clearTimeout(el._t);
+  if (msg) el._t = setTimeout(() => { el.textContent = ''; el.classList.remove('error'); }, 3000);
+}
+
+function routineSummary(r) {
+  const bits = [];
+  if (r.day) bits.push(DAY_FULL[r.day]);
+  if (r.time) bits.push(TIME_FULL[r.time]);
+  bits.push(`${r.exercises.length} exercise${r.exercises.length === 1 ? '' : 's'}`);
+  return bits.join(' · ');
+}
+
+function fieldLabel(text) {
+  const l = document.createElement('label');
+  l.className = 'field-label';
+  l.textContent = text;
+  return l;
+}
+
+function renderRoutinesEditor() {
+  const list = document.getElementById('routines-list');
+  list.innerHTML = '';
+  if (!state.routines.length) {
+    list.innerHTML = '<div class="empty-note" style="text-align:left;padding:0 0 10px;">No routines yet.</div>';
+    return;
+  }
+  for (const r of state.routines) list.appendChild(buildRoutineEditorItem(r));
+}
+
+function buildRoutineEditorItem(r) {
+  const item = document.createElement('div');
+  item.className = 'routine-item';
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'routine-item-toggle';
+  toggle.innerHTML =
+    `<span>${esc(r.name)}</span><span class="routine-item-summary">${esc(routineSummary(r))}</span>`;
+  toggle.addEventListener('click', () => {
+    state.expandedRoutineId = state.expandedRoutineId === r.id ? null : r.id;
+    renderRoutinesEditor();
+  });
+  item.appendChild(toggle);
+  if (state.expandedRoutineId !== r.id) return item;
+
+  const body = document.createElement('div');
+  body.className = 'routine-item-body';
+
+  // name
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = r.name;
+  const commitName = async () => {
+    const v = nameInput.value.trim();
+    if (!v || v === r.name) { nameInput.value = r.name; return; }
+    try {
+      await db.updateRoutine(r.id, { name: v });
+      await loadRoutines();
+      renderRoutinesEditor();
+      renderRoutineStrip();
+    } catch (err) {
+      setRoutineStatus(err.message, true);
+      nameInput.value = r.name;
+    }
+  };
+  nameInput.addEventListener('blur', commitName);
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') nameInput.blur(); });
+
+  // day
+  const daySel = document.createElement('select');
+  daySel.innerHTML =
+    '<option value="">Any day</option>' +
+    ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+      .map((d) => `<option value="${d}"${r.day === d ? ' selected' : ''}>${DAY_FULL[d]}</option>`)
+      .join('');
+  daySel.addEventListener('change', async () => {
+    await db.updateRoutine(r.id, { day: daySel.value || null });
+    await loadRoutines();
+    renderRoutinesEditor();
+    renderRoutineStrip();
+  });
+
+  // time of day
+  const timeSel = document.createElement('select');
+  timeSel.innerHTML =
+    '<option value="">Any time</option>' +
+    `<option value="am"${r.time === 'am' ? ' selected' : ''}>Morning</option>` +
+    `<option value="pm"${r.time === 'pm' ? ' selected' : ''}>Evening</option>`;
+  timeSel.addEventListener('change', async () => {
+    await db.updateRoutine(r.id, { time: timeSel.value || null });
+    await loadRoutines();
+    renderRoutinesEditor();
+    renderRoutineStrip();
+  });
+
+  // exercise rows
+  const exList = document.createElement('div');
+  exList.className = 'routine-ex-list';
+  r.exercises.forEach((ex, i) => {
+    const row = document.createElement('div');
+    row.className = 'routine-ex-row';
+
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'routine-ex-btn';
+    up.textContent = '▲';
+    up.disabled = i === 0;
+    up.addEventListener('click', () => reorderRoutineExercise(r, i, i - 1));
+
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'routine-ex-btn';
+    down.textContent = '▼';
+    down.disabled = i === r.exercises.length - 1;
+    down.addEventListener('click', () => reorderRoutineExercise(r, i, i + 1));
+
+    const nm = document.createElement('span');
+    nm.className = 'routine-ex-name' + (ex.missing ? ' missing' : '');
+    nm.textContent = `${i + 1}. ${ex.name}`;
+
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'del-btn';
+    rm.textContent = '✕';
+    rm.addEventListener('click', () => removeRoutineExercise(r, i));
+
+    row.append(up, down, nm, rm);
+    exList.appendChild(row);
+  });
+
+  // add exercise
+  const addSel = document.createElement('select');
+  addSel.innerHTML =
+    '<option value="">Add an exercise…</option>' +
+    state.exercises
+      .map((e) => `<option value="${e.id}">${esc(e.name)} (${esc(e.muscle_group)})</option>`)
+      .join('');
+  addSel.addEventListener('change', async () => {
+    if (addSel.value) await addRoutineExercise(r, Number(addSel.value));
+  });
+
+  // actions
+  const actions = document.createElement('div');
+  actions.className = 'routine-item-actions';
+  const dupBtn = document.createElement('button');
+  dupBtn.type = 'button';
+  dupBtn.className = 'secondary';
+  dupBtn.textContent = 'Duplicate';
+  dupBtn.addEventListener('click', async () => {
+    const { id, name } = await db.duplicateRoutine(r.id);
+    await loadRoutines();
+    state.expandedRoutineId = id;
+    renderRoutinesEditor();
+    renderRoutineStrip();
+    setRoutineStatus(`Photocopied to "${name}" — edit the copy freely, the original is untouched.`);
+  });
+  // Inline two-tap delete - no confirm() dialog, which some installed-PWA
+  // contexts silently suppress (that's the "Delete does nothing" bug).
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'secondary';
+  delBtn.textContent = 'Delete';
+  let armed = false;
+  let armTimer;
+  delBtn.addEventListener('click', async () => {
+    if (!armed) {
+      armed = true;
+      delBtn.textContent = 'Tap again to delete';
+      delBtn.classList.add('danger-armed');
+      clearTimeout(armTimer);
+      armTimer = setTimeout(() => {
+        armed = false;
+        delBtn.textContent = 'Delete';
+        delBtn.classList.remove('danger-armed');
+      }, 4000);
+      return;
+    }
+    clearTimeout(armTimer);
+    try {
+      await db.deleteRoutine(r.id);
+      if (state.activeRoutineId === r.id) state.activeRoutineId = null;
+      if (state.expandedRoutineId === r.id) state.expandedRoutineId = null;
+      await loadRoutines();
+      renderRoutinesEditor();
+      renderRoutineStrip();
+      setRoutineStatus('Deleted. Your logged workouts are not affected.');
+    } catch (err) {
+      setRoutineStatus(err.message, true);
+    }
+  });
+  actions.append(dupBtn, delBtn);
+
+  body.append(
+    fieldLabel('Name'), nameInput,
+    fieldLabel('Day'), daySel,
+    fieldLabel('Time of day (for two-a-days)'), timeSel,
+    fieldLabel('Exercises — in order'), exList, addSel,
+    actions
+  );
+  item.appendChild(body);
+  return item;
+}
+
+function routineExerciseIds(r) {
+  return r.exercises.map((e) => e.id);
+}
+
+async function persistRoutineExercises(r, ids) {
+  try {
+    await db.updateRoutine(r.id, { exercise_ids: ids });
+    await loadRoutines();
+    renderRoutinesEditor();
+    renderRoutineStrip();
+  } catch (err) {
+    setRoutineStatus(err.message, true);
+  }
+}
+
+async function reorderRoutineExercise(r, from, to) {
+  const ids = routineExerciseIds(r);
+  if (to < 0 || to >= ids.length) return;
+  [ids[from], ids[to]] = [ids[to], ids[from]];
+  await persistRoutineExercises(r, ids);
+}
+
+async function removeRoutineExercise(r, i) {
+  const ids = routineExerciseIds(r);
+  ids.splice(i, 1);
+  await persistRoutineExercises(r, ids);
+}
+
+async function addRoutineExercise(r, exId) {
+  const ids = routineExerciseIds(r);
+  if (ids.includes(exId)) {
+    setRoutineStatus('That exercise is already in this routine.');
+    return;
+  }
+  ids.push(exId);
+  await persistRoutineExercises(r, ids);
+}
+
+document.getElementById('routine-new-btn').addEventListener('click', async () => {
+  const names = new Set(state.routines.map((r) => r.name));
+  let name = 'New routine';
+  let n = 2;
+  while (names.has(name)) name = `New routine ${n++}`;
+  try {
+    const id = await db.createRoutine({ name, day: null, time: null, exercise_ids: [] });
+    await loadRoutines();
+    state.expandedRoutineId = id;
+    renderRoutinesEditor();
+    renderRoutineStrip();
+    setRoutineStatus('Created — set its day, time, and exercises below.');
+  } catch (err) {
+    setRoutineStatus(err.message, true);
+  }
+});
+
 // ---------- PRS tab ----------
 
 async function refreshPRs() {
@@ -709,10 +1149,18 @@ async function refreshPRs() {
   for (const p of prs) {
     const card = document.createElement('div');
     card.className = 'pr-card';
-    card.innerHTML = `
-      <h4>${p.exercise_name} <span class="muscle-tag" data-group="${p.muscle_group}">${p.muscle_group}</span></h4>
-      <div class="pr-line">Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}</div>
-      <div class="pr-line">Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})</div>`;
+    const h4 = document.createElement('h4');
+    h4.appendChild(document.createTextNode(p.exercise_name + ' '));
+    h4.appendChild(muscleTag(p.muscle_group));
+    const line1 = document.createElement('div');
+    line1.className = 'pr-line';
+    line1.textContent =
+      `Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}`;
+    const line2 = document.createElement('div');
+    line2.className = 'pr-line';
+    line2.textContent =
+      `Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})`;
+    card.append(h4, line1, line2);
 
     const milestones = milestonesById.get(p.exercise_id) || [];
     if (milestones.length > 1) {
@@ -923,9 +1371,11 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
   const sessions = await db.getSessionsForExport(range);
   const bodyWeight = await db.listBodyWeight(range);
   const prHistory = await db.getPRHistory(); // all-time by nature
+  const routines = await db.listRoutines();
   const data = {
     sessions: toJSONExport(sessions),
     bodyWeight: bodyWeight.map((b) => ({ date: b.date, weight: b.weight })),
+    routines: toRoutinesExport(routines),
     prHistory: prHistory
       .filter((h) => h.milestones.length)
       .map((h) => ({ exercise: h.exercise_name, muscle_group: h.muscle_group, milestones: h.milestones })),
@@ -935,6 +1385,7 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
   const summary =
     `Copied ${data.sessions.length} session${data.sessions.length === 1 ? '' : 's'}` +
     ` + ${data.bodyWeight.length} body-weight entr${data.bodyWeight.length === 1 ? 'y' : 'ies'}` +
+    ` + ${data.routines.length} routine${data.routines.length === 1 ? '' : 's'}` +
     ` + PR history for ${data.prHistory.length} exercise${data.prHistory.length === 1 ? '' : 's'} to clipboard.`;
   try {
     await navigator.clipboard.writeText(json);
@@ -989,7 +1440,8 @@ document.getElementById('backup-json-btn').addEventListener('click', async () =>
   try {
     const sessions = await db.getSessionsForExport(); // no range = all time
     const bodyWeight = await db.listBodyWeight();      // no range = all time
-    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString());
+    const routines = await db.listRoutines();
+    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString(), routines);
     const json = JSON.stringify(backup, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1002,7 +1454,10 @@ document.getElementById('backup-json-btn').addEventListener('click', async () =>
     URL.revokeObjectURL(url);
     const sCount = backup.sessions.length;
     const bCount = backup.bodyWeight.length;
-    status.textContent = `Saved ${sCount} session${sCount === 1 ? '' : 's'} and ${bCount} body-weight entr${bCount === 1 ? 'y' : 'ies'}.`;
+    const rCount = backup.routines.length;
+    status.textContent =
+      `Saved ${sCount} session${sCount === 1 ? '' : 's'}, ${bCount} body-weight entr${bCount === 1 ? 'y' : 'ies'}` +
+      `${rCount ? `, and ${rCount} routine${rCount === 1 ? '' : 's'}` : ''}.`;
   } catch (err) {
     status.classList.add('error');
     status.textContent = 'Could not build the backup: ' + err.message;
@@ -1054,12 +1509,13 @@ document.getElementById('import-btn').addEventListener('click', async () => {
   }
 
   const { summary } = parsed;
-  const bwPhrase = summary.bodyWeight
-    ? ` and ${summary.bodyWeight} body-weight entr${summary.bodyWeight === 1 ? 'y' : 'ies'}`
-    : '';
+  const extras = [];
+  if (summary.bodyWeight) extras.push(`${summary.bodyWeight} body-weight entr${summary.bodyWeight === 1 ? 'y' : 'ies'}`);
+  if (summary.routines) extras.push(`${summary.routines} routine${summary.routines === 1 ? '' : 's'}`);
+  const extraPhrase = extras.length ? ` plus ${extras.join(' and ')}` : '';
   const ok = confirm(
     `Import ${summary.sessions} session${summary.sessions === 1 ? '' : 's'} ` +
-    `(${summary.sets} set${summary.sets === 1 ? '' : 's'})${bwPhrase}?\n\n` +
+    `(${summary.sets} set${summary.sets === 1 ? '' : 's'})${extraPhrase}?\n\n` +
     `This only adds data - nothing already saved is changed or deleted.`
   );
   if (!ok) return;
@@ -1076,6 +1532,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     if (r.notesFilled) parts.push(`${r.notesFilled} note${r.notesFilled === 1 ? '' : 's'} filled in`);
     if (r.notesSkipped) parts.push(`${r.notesSkipped} existing note${r.notesSkipped === 1 ? '' : 's'} kept`);
     if (r.bodyWeightSkipped) parts.push(`${r.bodyWeightSkipped} body-weight date${r.bodyWeightSkipped === 1 ? '' : 's'} already present`);
+    if (r.routinesAdded) parts.push(`${r.routinesAdded} routine${r.routinesAdded === 1 ? '' : 's'} added`);
+    if (r.routinesSkipped) parts.push(`${r.routinesSkipped} routine${r.routinesSkipped === 1 ? '' : 's'} skipped (name already used)`);
     status.textContent = 'Done - ' + parts.join(', ') + '.';
     importTextEl.value = '';
     importFileEl.value = '';
@@ -1083,6 +1541,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     document.getElementById('exercise-select').value = state.currentExerciseId;
     document.getElementById('history-exercise-select').value = state.currentExerciseId;
     refreshExerciseEditor();
+    await loadRoutines();
+    renderRoutinesEditor();
     await onExerciseChange();
     await refreshTodaySession();
   } catch (err) {
@@ -1132,6 +1592,7 @@ if ('serviceWorker' in navigator) {
   const chosen = await loadExercises();
   document.getElementById('exercise-select').value = chosen;
   document.getElementById('history-exercise-select').value = chosen;
+  await loadRoutines();
   await onExerciseChange();
-  await refreshTodaySession();
+  await refreshTodaySession(); // also renders the routine strip
 })();

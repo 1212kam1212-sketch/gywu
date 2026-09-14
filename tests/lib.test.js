@@ -13,6 +13,8 @@ import {
   parseImportJSON,
   computePRHistory,
   toPRHistoryCSV,
+  pickActiveRoutine,
+  toRoutinesExport,
 } from '../js/lib.js';
 
 // ---------- estimate1RM ----------
@@ -293,7 +295,7 @@ test('parseImportJSON: accepts the bare toJSONExport array', () => {
   assert.equal(out.sessions.length, 1);
   assert.equal(out.sessions[0].exercises[0].name, 'Bench Press');
   assert.equal(out.sessions[0].exercises[0].sets[0].weight, 100);
-  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0 });
+  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0, routines: 0 });
 });
 
 test('parseImportJSON: accepts a { sessions, bodyWeight } backup object', () => {
@@ -389,4 +391,76 @@ test('toBackupJSON: round-trips through parseImportJSON', () => {
   assert.equal(parsed.sessions[0].exercises[0].sets[0].rir, 2);
   assert.equal(parsed.sessions[0].notes, 'hi');
   assert.deepEqual(parsed.bodyWeight, [{ date: '2026-08-17', weight: 80 }]);
+});
+
+// ---------- routines ----------
+
+test('toRoutinesExport: reduces resolved routines to name/day/time/exercise-names', () => {
+  const routines = [
+    {
+      id: 7, name: 'Mon PM - Chest', day: 'Mon', time: 'pm',
+      exercises: [
+        { id: 1, name: 'Incline Press', muscle_group: 'Chest' },
+        { id: 2, name: 'Cable Fly', muscle_group: 'Chest' },
+      ],
+    },
+  ];
+  assert.deepEqual(toRoutinesExport(routines), [
+    { name: 'Mon PM - Chest', day: 'Mon', time: 'pm', exercises: ['Incline Press', 'Cable Fly'] },
+  ]);
+});
+
+test('toRoutinesExport: null-safe on empty / missing fields', () => {
+  assert.deepEqual(toRoutinesExport(), []);
+  assert.deepEqual(toRoutinesExport([{ name: 'x' }]), [{ name: 'x', day: null, time: null, exercises: [] }]);
+});
+
+test('pickActiveRoutine: empty -> null, single -> that one', () => {
+  assert.equal(pickActiveRoutine([], 9), null);
+  const only = { id: 1, time: null };
+  assert.equal(pickActiveRoutine([only], 9), only);
+});
+
+test('pickActiveRoutine: with two, matches the am/pm tag to the hour', () => {
+  const am = { id: 1, time: 'am' };
+  const pm = { id: 2, time: 'pm' };
+  assert.equal(pickActiveRoutine([am, pm], 8), am);
+  assert.equal(pickActiveRoutine([am, pm], 17), pm);
+  assert.equal(pickActiveRoutine([am, pm], 12), pm); // noon counts as pm
+});
+
+test('pickActiveRoutine: no tag matches the bucket -> falls back to the first', () => {
+  const a = { id: 1, time: null };
+  const b = { id: 2, time: 'pm' };
+  assert.equal(pickActiveRoutine([a, b], 8), a); // 8am, no "am" routine -> first
+});
+
+test('parseImportJSON: parses routines from the backup object, ignoring bad day/time', () => {
+  const obj = {
+    sessions: [],
+    routines: [
+      { name: 'Mon PM - Chest', day: 'Mon', time: 'pm', exercises: ['Incline Press', 'Cable Fly'] },
+      { name: 'Sloppy', day: 'Monday', time: 'evening', exercises: [' Squat ', '', 3] },
+    ],
+  };
+  const out = parseImportJSON(JSON.stringify(obj));
+  assert.equal(out.summary.routines, 2);
+  assert.deepEqual(out.routines[0], {
+    name: 'Mon PM - Chest', day: 'Mon', time: 'pm', exercises: ['Incline Press', 'Cable Fly'],
+  });
+  // 'Monday'/'evening' aren't valid tokens -> nulled; blank exercise dropped, number coerced
+  assert.deepEqual(out.routines[1], { name: 'Sloppy', day: null, time: null, exercises: ['Squat', '3'] });
+});
+
+test('parseImportJSON: a routine with no name is rejected', () => {
+  assert.throws(
+    () => parseImportJSON(JSON.stringify({ sessions: [], routines: [{ exercises: [] }] })),
+    /routine 1 has no name/
+  );
+});
+
+test('parseImportJSON: bare array input yields no routines', () => {
+  const out = parseImportJSON(JSON.stringify([{ date: '2026-08-17', exercises: [] }]));
+  assert.deepEqual(out.routines, []);
+  assert.equal(out.summary.routines, 0);
 });
