@@ -50,6 +50,18 @@ function rangeFromWeeks(weeks) {
   return { startDate: daysAgoStr(weeks * 7), endDate: todayStr() };
 }
 
+// Exercise names and muscle groups are free text (typed via "+ Add custom
+// exercise", or arbitrary in an imported JSON file) - build the little
+// colored tag with DOM methods rather than string-interpolated innerHTML,
+// so an exercise/group name can never be parsed as markup.
+function muscleTag(group) {
+  const tag = document.createElement('span');
+  tag.className = 'muscle-tag';
+  tag.dataset.group = group;
+  tag.textContent = group;
+  return tag;
+}
+
 function setActivePreset(containerEl, btnEl) {
   containerEl.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
   btnEl.classList.add('active');
@@ -217,7 +229,8 @@ async function refreshTodaySession() {
       const block = document.createElement('div');
       block.className = 'exercise-block';
       const h4 = document.createElement('h4');
-      h4.innerHTML = `${ex.exercise_name} <span class="muscle-tag" data-group="${ex.muscle_group}">${ex.muscle_group}</span>`;
+      h4.appendChild(document.createTextNode(ex.exercise_name + ' '));
+      h4.appendChild(muscleTag(ex.muscle_group));
       block.appendChild(h4);
       for (const s of ex.sets) {
         const row = document.createElement('div');
@@ -740,7 +753,7 @@ const DAY_FULL = {
 const TIME_FULL = { am: 'Morning', pm: 'Evening' };
 
 function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 async function loadRoutines() {
@@ -1136,10 +1149,18 @@ async function refreshPRs() {
   for (const p of prs) {
     const card = document.createElement('div');
     card.className = 'pr-card';
-    card.innerHTML = `
-      <h4>${p.exercise_name} <span class="muscle-tag" data-group="${p.muscle_group}">${p.muscle_group}</span></h4>
-      <div class="pr-line">Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}</div>
-      <div class="pr-line">Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})</div>`;
+    const h4 = document.createElement('h4');
+    h4.appendChild(document.createTextNode(p.exercise_name + ' '));
+    h4.appendChild(muscleTag(p.muscle_group));
+    const line1 = document.createElement('div');
+    line1.className = 'pr-line';
+    line1.textContent =
+      `Heaviest set: ${p.best_weight.weight} x ${p.best_weight.reps} on ${prettyDate(p.best_weight.date)}`;
+    const line2 = document.createElement('div');
+    line2.className = 'pr-line';
+    line2.textContent =
+      `Best est. 1RM: ${p.best_e1rm.e1rm} (from ${p.best_e1rm.weight} x ${p.best_e1rm.reps} on ${prettyDate(p.best_e1rm.date)})`;
+    card.append(h4, line1, line2);
 
     const milestones = milestonesById.get(p.exercise_id) || [];
     if (milestones.length > 1) {
