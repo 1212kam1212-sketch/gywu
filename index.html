@@ -210,6 +210,75 @@
   <!-- VOLUME -->
   <section id="view-volume" class="view">
     <div class="card">
+      <div class="card-title">Total weight moved</div>
+      <div class="card-sub">to date &middot; every session you've ever logged</div>
+
+      <div class="hero-icon">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+          <rect x="1" y="10" width="4" height="6" rx="1" fill="var(--lime)"/>
+          <rect x="6" y="7" width="3" height="12" rx="1" fill="var(--lime)"/>
+          <rect x="10.5" y="11.5" width="5" height="3" fill="var(--lime)"/>
+          <rect x="17" y="7" width="3" height="12" rx="1" fill="var(--lime)"/>
+          <rect x="21" y="10" width="4" height="6" rx="1" fill="var(--lime)"/>
+        </svg>
+      </div>
+
+      <div class="tonnage-flip" id="tonnage-flip"></div>
+      <div class="tonnage-unit">pounds</div>
+
+      <div class="milestone-track">
+        <div class="milestone-line">
+          <span>Next milestone</span>
+          <strong id="milestone-text"></strong>
+        </div>
+        <div class="milestone-bar"><div class="milestone-bar-fill" id="milestone-fill"></div></div>
+      </div>
+
+      <div id="milestone-banner" class="pr-banner hidden"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Accomplishments</div>
+      <div class="card-sub">also all-time &middot; also update the moment you log a set</div>
+      <div class="tiles">
+        <div class="tile tile-sets">
+          <div class="tile-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <rect x="2" y="14" width="18" height="3" rx="1.5" fill="var(--teal)"/>
+              <rect x="4" y="9" width="14" height="3" rx="1.5" fill="var(--teal)"/>
+              <rect x="6" y="4" width="10" height="3" rx="1.5" fill="var(--teal)"/>
+            </svg>
+          </div>
+          <div class="tile-value" id="stat-sets">0</div>
+          <div class="tile-label">Sets to date</div>
+        </div>
+
+        <div class="tile tile-reps">
+          <div class="tile-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <path d="M4 8a7 7 0 0 1 12.3-4.5" stroke="var(--blue)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+              <path d="M16.6 1.6 17 5l-3.4-.6z" fill="var(--blue)"/>
+              <path d="M18 14a7 7 0 0 1-12.3 4.5" stroke="var(--blue)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+              <path d="M5.4 20.4 5 17l3.4.6z" fill="var(--blue)"/>
+            </svg>
+          </div>
+          <div class="tile-value" id="stat-reps">0</div>
+          <div class="tile-label">Reps to date</div>
+        </div>
+
+        <div class="tile tile-streak">
+          <div class="tile-icon">
+            <svg width="20" height="22" viewBox="0 0 20 22" fill="none">
+              <path d="M10 0.5c1 3 5 5 5 10a5 5 0 0 1-10 0c0-1.6.8-2.6 1.5-3.6-.1 1.3.6 2.1 1.3 2.1.9 0 1-1 .7-2C7.6 5 8.7 2.3 10 .5Z" fill="var(--amber)"/>
+            </svg>
+          </div>
+          <div class="tile-value" id="stat-streak">0</div>
+          <div class="tile-label">Day streak</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Weekly sets per muscle group</div>
       <div class="range-presets" id="volume-range-presets">
         <button type="button" data-weeks="8" class="active">8wk</button>

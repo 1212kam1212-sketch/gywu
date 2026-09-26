@@ -153,8 +153,13 @@ is a no-op and a half-finished import can simply be run again.
 - **PRs** — all-time heaviest set and best estimated 1RM per exercise,
   each with an expandable **progression** timeline: every set that set a
   new weight and/or e1RM record, with its date.
-- **Volume** — sets per muscle group per week, with the same date-range
-  filtering.
+- **Volume** — lifetime **Total weight moved** (a split-flap "flip clock"
+  reveal every time you open the tab), **Accomplishments** tiles (total
+  sets, total reps, current streak), and a milestone celebration banner
+  the first time a session pushes your lifetime tonnage past a threshold —
+  all computed live from sets you've already logged, never a stored
+  counter, so your full history counts from day one. Below that, sets per
+  muscle group per week, with the same date-range filtering.
 - **Body Wt** — log body weight by date with a trend chart, kept separate
   from lifting data.
 - **Export / Import** — CSV and JSON export, a full downloadable backup
@@ -169,10 +174,13 @@ every set on every view.
 
 ## Schema versions
 
-`DB_VERSION` in `js/db.js` is currently **2**. The `onupgradeneeded`
+`DB_VERSION` in `js/db.js` is currently **3**. The `onupgradeneeded`
 handler only ever *creates* stores it doesn't already find, so bumping the
 version on an existing database adds the new store(s) and leaves every
 existing store and its rows untouched:
 
 - **v1** — `exercises`, `sessions`, `sets`, `bodyWeight`
 - **v2** — adds `routines`
+- **v3** — adds `meta` (currently just remembers the highest weight-moved
+  milestone already celebrated, so the Volume tab doesn't re-fire the
+  celebration banner on every visit)
