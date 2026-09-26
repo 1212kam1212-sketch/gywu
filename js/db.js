@@ -8,6 +8,8 @@
 //   bodyWeight  { id, date, weight }
 //   routines    { id, name (unique), day ('Mon'..'Sun'|null), time ('am'|'pm'|null),
 //                 exercise_ids [int], created_at }  -- planning only, never training data
+//   meta        { key (unique), value }  -- small app-state key/value pairs
+//                 (currently just the highest weight-moved milestone already celebrated)
 //
 // `date` is denormalized onto each set from its parent session at insert
 // time (SQLite could join sessions->sets to filter by date; IndexedDB
@@ -18,10 +20,11 @@
 import { estimate1RM, roundE1RM, detectPR } from './lib.js';
 
 const DB_NAME = 'gywu';
-// v2 adds the `routines` store. The upgrade handler below only ever *creates*
-// stores it doesn't find, so bumping the version on an existing v1 database
-// just adds `routines` and leaves every existing store and its data alone.
-const DB_VERSION = 2;
+// v2 added `routines`. v3 adds `meta`. The upgrade handler below only ever
+// *creates* stores it doesn't find, so bumping the version on an existing
+// database just adds whatever's missing and leaves every existing store and
+// its data alone.
+const DB_VERSION = 3;
 
 export const ROUTINE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // JS Date.getDay() is 0=Sun..6=Sat; map it onto ROUTINE_DAYS labels.
@@ -102,6 +105,11 @@ export function openDB() {
       if (!db.objectStoreNames.contains('routines')) {
         const store = db.createObjectStore('routines', { keyPath: 'id', autoIncrement: true });
         store.createIndex('by_name', 'name', { unique: true });
+      }
+
+      // v3
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
       }
     };
 
@@ -660,6 +668,90 @@ export async function getPRHistory() {
 
   const { computePRHistory } = await import('./lib.js');
   return computePRHistory(rows);
+}
+
+// ---------- lifetime stats ----------
+//
+// Everything here is *computed* from the sets you've already logged - none
+// of it is a separately-stored running counter. That means it's always
+// correct from the moment it ships (your full history counts immediately,
+// nothing starts at zero) and needs no schema change of its own.
+
+// All-time totals: weight moved (sum of weight*reps), sets, reps.
+export async function getLifetimeStats() {
+  const db = await openDB();
+  const tx = db.transaction('sets', 'readonly');
+  const allSets = await req2promise(tx.objectStore('sets').getAll());
+  let totalWeight = 0;
+  let totalReps = 0;
+  for (const s of allSets) {
+    totalWeight += s.weight * s.reps;
+    totalReps += s.reps;
+  }
+  return { totalWeight, totalSets: allSets.length, totalReps };
+}
+
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Consecutive scheduled training days completed, walking back from today.
+// "Scheduled" = today's Routines assignments, applied uniformly across
+// history (there's no record of what your split looked like on any given
+// past date, so a day is judged by whichever routine covers that weekday
+// *now*). A day with no routine assigned is a rest day and is skipped -
+// it neither extends nor breaks the streak. Today never breaks the streak
+// before the day is over; it only adds to it once you've logged something.
+export async function getCurrentStreak(now = new Date()) {
+  const routines = await listRoutines();
+  const scheduledDays = new Set(routines.filter((r) => r.day).map((r) => r.day));
+  if (!scheduledDays.size) return 0; // no routines set up - nothing to hold a streak to yet
+
+  const db = await openDB();
+  const tx = db.transaction('sets', 'readonly');
+  const allSets = await req2promise(tx.objectStore('sets').getAll());
+  if (!allSets.length) return 0;
+
+  const trainedDates = new Set(allSets.map((s) => s.date));
+  const earliest = allSets.reduce((min, s) => (s.date < min ? s.date : min), allSets[0].date);
+  const todayLabel = localDateStr(now);
+
+  let streak = 0;
+  const cursor = new Date(now);
+  for (let i = 0; i < 3660; i++) { // ~10yr safety bound, never meant to be hit
+    const cursorStr = localDateStr(cursor);
+    if (cursorStr < earliest) break;
+    const isToday = cursorStr === todayLabel;
+    const trained = trainedDates.has(cursorStr);
+
+    if (isToday) {
+      if (trained) streak++;
+    } else if (scheduledDays.has(todayDayLabel(cursor))) {
+      if (trained) streak++;
+      else break; // missed a day that was actually scheduled - streak ends
+    }
+    // else: rest day (no routine on this weekday) - skip silently
+
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+export async function getMeta(key, fallback) {
+  const db = await openDB();
+  const tx = db.transaction('meta', 'readonly');
+  const row = await req2promise(tx.objectStore('meta').get(key));
+  return row ? row.value : fallback;
+}
+
+export async function setMeta(key, value) {
+  const db = await openDB();
+  const tx = db.transaction('meta', 'readwrite');
+  await req2promise(tx.objectStore('meta').put({ key, value }));
+  await tx2promise(tx);
 }
 
 // ---------- weekly volume ----------

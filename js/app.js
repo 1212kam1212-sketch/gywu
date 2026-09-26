@@ -2,7 +2,7 @@
 
 import {
   toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV,
-  toRoutinesExport, pickActiveRoutine,
+  toRoutinesExport, pickActiveRoutine, highestMilestone, nextMilestone,
 } from './lib.js';
 import * as db from './db.js';
 
@@ -83,7 +83,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
       renderRoutinesEditor();
     }
     if (btn.dataset.view === 'view-prs') refreshPRs();
-    if (btn.dataset.view === 'view-volume') refreshVolume();
+    if (btn.dataset.view === 'view-volume') { refreshVolume(); refreshLifetimeStats(); }
     if (btn.dataset.view === 'view-bodyweight') refreshBodyWeight();
   });
 });
@@ -1195,6 +1195,133 @@ function renderMilestonesTable(milestones) {
   }
   html += '</tbody></table>';
   return html;
+}
+
+// ---------- lifetime stats (Volume tab) ----------
+//
+// Total weight moved, total sets, total reps, and the streak are all
+// computed live from sets you've already logged (db.getLifetimeStats /
+// db.getCurrentStreak) - nothing here is a separately-stored counter, so
+// your full history counts from the moment this ships, nothing starts at
+// zero, and no schema change was needed for any of it. The flip-clock
+// reveal plays every time this tab is opened, on purpose - it's meant to
+// be seen, not just to exist.
+
+const reducedMotion = () =>
+  window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function buildTonnageDigits(total) {
+  const wrap = document.getElementById('tonnage-flip');
+  wrap.innerHTML = '';
+  const str = Math.round(total).toLocaleString('en-US');
+  const digitEls = [];
+  for (const ch of str) {
+    if (ch === ',') {
+      const comma = document.createElement('span');
+      comma.className = 'flip-comma';
+      comma.textContent = ',';
+      wrap.appendChild(comma);
+    } else {
+      const d = document.createElement('div');
+      d.className = 'flip-digit';
+      d.textContent = reducedMotion() ? ch : '0';
+      d.dataset.final = ch;
+      wrap.appendChild(d);
+      digitEls.push(d);
+    }
+  }
+  return digitEls;
+}
+
+function restartFlip(el) {
+  el.classList.remove('flipping');
+  void el.offsetWidth; // force reflow so the animation replays
+  el.classList.add('flipping');
+}
+
+function flipDigitTo(el, finalDigit, extraSpins, startDelay) {
+  if (reducedMotion()) {
+    el.textContent = finalDigit;
+    return;
+  }
+  const seq = [];
+  for (let i = 0; i < extraSpins; i++) seq.push(String(Math.floor(Math.random() * 10)));
+  seq.push(finalDigit);
+  let step = 0;
+  function run() {
+    if (step >= seq.length) return;
+    const current = step; // snapshot now - the timeout must not read the live, later `step`
+    restartFlip(el);
+    setTimeout(() => { el.textContent = seq[current]; }, 140);
+    step++;
+    setTimeout(run, 280);
+  }
+  setTimeout(run, startDelay);
+}
+
+function countUpNumber(el, target, duration) {
+  if (reducedMotion()) {
+    el.textContent = target.toLocaleString('en-US');
+    return;
+  }
+  let start = null;
+  function tick(ts) {
+    if (start === null) start = ts;
+    const p = Math.min(1, (ts - start) / duration);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(eased * target).toLocaleString('en-US');
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+async function refreshLifetimeStats() {
+  const [stats, streak] = await Promise.all([db.getLifetimeStats(), db.getCurrentStreak()]);
+
+  const digits = buildTonnageDigits(stats.totalWeight);
+  digits.forEach((el, idxFromLeft) => {
+    const idxFromRight = digits.length - 1 - idxFromLeft;
+    const extraSpins = idxFromRight === 0 ? 3 : idxFromRight === 1 ? 2 : idxFromRight === 2 ? 1 : 0;
+    flipDigitTo(el, el.dataset.final, extraSpins, idxFromLeft * 60);
+  });
+
+  countUpNumber(document.getElementById('stat-sets'), stats.totalSets, 900);
+  countUpNumber(document.getElementById('stat-reps'), stats.totalReps, 900);
+  countUpNumber(document.getElementById('stat-streak'), streak, 900);
+
+  // Progress bar is measured from 0 lbs to the next milestone - a plain
+  // "how close am I to that number" readout rather than a segment-relative
+  // one between the previous and next milestone.
+  const next = nextMilestone(stats.totalWeight);
+  const remaining = next - stats.totalWeight;
+  document.getElementById('milestone-text').textContent =
+    `${Math.max(0, remaining).toLocaleString('en-US')} lbs to ${next.toLocaleString('en-US')}`;
+  const fill = document.getElementById('milestone-fill');
+  fill.style.width = '0%';
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      fill.style.width = `${Math.min(100, (stats.totalWeight / next) * 100)}%`;
+    });
+  });
+
+  // Milestone celebration: only for a threshold crossed *since we last
+  // checked*, and only shown on the visit where it happened - it hides
+  // itself again on every other visit rather than staying up forever. The
+  // very first time this ever runs, silently remember whatever milestone
+  // is already behind you - it doesn't retroactively celebrate a milestone
+  // you passed before this feature existed.
+  const banner = document.getElementById('milestone-banner');
+  banner.classList.add('hidden');
+  const reached = highestMilestone(stats.totalWeight);
+  const alreadyCelebrated = await db.getMeta('highestMilestoneCelebrated', null);
+  if (alreadyCelebrated === null) {
+    await db.setMeta('highestMilestoneCelebrated', reached);
+  } else if (reached > alreadyCelebrated) {
+    await db.setMeta('highestMilestoneCelebrated', reached);
+    void banner.offsetWidth; // force reflow so the glow animation replays
+    banner.textContent = `\u{1F3C6} Milestone: ${reached.toLocaleString('en-US')} lbs moved!`;
+    banner.classList.remove('hidden');
+  }
 }
 
 // ---------- VOLUME tab ----------

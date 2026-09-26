@@ -15,6 +15,8 @@ import {
   toPRHistoryCSV,
   pickActiveRoutine,
   toRoutinesExport,
+  highestMilestone,
+  nextMilestone,
 } from '../js/lib.js';
 
 // ---------- estimate1RM ----------
@@ -463,4 +465,34 @@ test('parseImportJSON: bare array input yields no routines', () => {
   const out = parseImportJSON(JSON.stringify([{ date: '2026-08-17', exercises: [] }]));
   assert.deepEqual(out.routines, []);
   assert.equal(out.summary.routines, 0);
+});
+
+// ---------- weight milestones ----------
+
+test('highestMilestone: 0 below the first threshold', () => {
+  assert.equal(highestMilestone(0), 0);
+  assert.equal(highestMilestone(9999), 0);
+});
+
+test('highestMilestone: lands exactly on a named threshold', () => {
+  assert.equal(highestMilestone(10000), 10000);
+  assert.equal(highestMilestone(142850), 100000);
+  assert.equal(highestMilestone(2000000), 2000000);
+});
+
+test('highestMilestone: steps every 500,000 past the last named threshold', () => {
+  assert.equal(highestMilestone(2499999), 2000000);
+  assert.equal(highestMilestone(2500000), 2500000);
+  assert.equal(highestMilestone(3200000), 3000000);
+});
+
+test('nextMilestone: the next threshold still ahead', () => {
+  assert.equal(nextMilestone(0), 10000);
+  assert.equal(nextMilestone(142850), 150000);
+  assert.equal(nextMilestone(10000), 25000); // right on a threshold -> the next one, not itself
+});
+
+test('nextMilestone: keeps stepping by 500,000 past the last named threshold', () => {
+  assert.equal(nextMilestone(2000000), 2500000);
+  assert.equal(nextMilestone(2600000), 3000000);
 });

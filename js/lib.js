@@ -12,6 +12,38 @@ export function roundE1RM(weight, reps) {
   return Math.round(estimate1RM(weight, reps) * 10) / 10;
 }
 
+// ---------- lifetime weight-moved milestones ----------
+
+// Named thresholds; beyond the last one, milestones continue every 500,000.
+export const WEIGHT_MILESTONES = [
+  10000, 25000, 50000, 100000, 150000, 200000, 300000, 400000, 500000,
+  750000, 1000000, 1500000, 2000000,
+];
+const MILESTONE_STEP_BEYOND_LAST = 500000;
+
+// The highest milestone already reached at this total (0 if none yet).
+export function highestMilestone(total) {
+  const top = WEIGHT_MILESTONES[WEIGHT_MILESTONES.length - 1];
+  if (total >= top) {
+    return top + Math.floor((total - top) / MILESTONE_STEP_BEYOND_LAST) * MILESTONE_STEP_BEYOND_LAST;
+  }
+  let best = 0;
+  for (const m of WEIGHT_MILESTONES) {
+    if (total >= m) best = m;
+    else break;
+  }
+  return best;
+}
+
+// The next milestone still ahead of this total.
+export function nextMilestone(total) {
+  for (const m of WEIGHT_MILESTONES) {
+    if (total < m) return m;
+  }
+  const top = WEIGHT_MILESTONES[WEIGHT_MILESTONES.length - 1];
+  return top + (Math.floor((total - top) / MILESTONE_STEP_BEYOND_LAST) + 1) * MILESTONE_STEP_BEYOND_LAST;
+}
+
 // Monday-based ISO week start for a YYYY-MM-DD date string.
 export function weekStart(dateStr) {
   const d = new Date(dateStr + 'T00:00:00Z');
