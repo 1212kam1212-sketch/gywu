@@ -6,7 +6,7 @@ import {
   MEAL_SLOTS, waterOz, normalizeDailyLog, sumMeals, sleepHours,
   buildDailyAnalysis, toDailyAnalysisJSON, toDailyCSV, toDailyLogsExport,
   normalizeSavedMeal, toSavedMealsExport, buildMealSuggestions, filterMealSuggestions,
-  scaleMacros, copyMealsInto,
+  scaleMacros, copyMealsInto, isRealDate, DAILY_LIMITS,
 } from './lib.js';
 import * as db from './db.js';
 
@@ -1580,7 +1580,7 @@ async function persistDaily() {
       });
     }
     setDailySaved('Saved ✓', true);
-    refreshMealSuggestions(); // newly typed meals become suggestions right away
+    refreshMealSuggestions().catch(() => {}); // newly typed meals become suggestions right away
   } catch (err) {
     setDailySaved('Could not save: ' + err.message);
   }
@@ -1606,6 +1606,15 @@ function numOrNull(v) {
   if (v === '' || v === null || v === undefined) return null;
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// Numbers outside what a day can hold are dropped on save. Flag the box in
+// red as you type so that never happens silently.
+function flagRange(input, key) {
+  const v = input.value;
+  const bad = v !== '' && !(Number(v) >= 0 && Number(v) <= DAILY_LIMITS[key]);
+  input.classList.toggle('bad', bad);
+  input.title = bad ? `Out of range (0–${DAILY_LIMITS[key].toLocaleString()}) - this value won't be saved` : '';
 }
 
 function updateDailyTotals() {
@@ -1681,7 +1690,7 @@ function renderDailyMeals() {
       name.blur();
       updateDailyTotals();
       scheduleDailySave();
-      if (s.saved) db.touchSavedMeal(s.key).then(refreshMealSuggestions);
+      if (s.saved) db.touchSavedMeal(s.key).then(refreshMealSuggestions).catch(() => {});
     }
 
     function showSuggestions() {
@@ -1715,7 +1724,7 @@ function renderDailyMeals() {
 
     name.addEventListener('input', () => { meal.name = name.value; paintSaveBtn(); showSuggestions(); scheduleDailySave(); });
     name.addEventListener('focus', showSuggestions);
-    name.addEventListener('blur', () => setTimeout(hideSuggestions, 150));
+    name.addEventListener('blur', () => setTimeout(hideSuggestions, 250));
 
     const grid = document.createElement('div');
     grid.className = 'macro-grid';
@@ -1735,6 +1744,7 @@ function renderDailyMeals() {
         meal[key] = inp.value;
         meal._base = null; // hand-edited numbers become the new starting point for the portion chips
         meal._mult = null;
+        flagRange(inp, key);
         paintChips();
         updateDailyTotals();
         scheduleDailySave();
@@ -1760,7 +1770,7 @@ function renderDailyMeals() {
         if (!Object.values(meal._base).some((v) => v !== '' && v !== null && v !== undefined)) return;
         const scaled = scaleMacros(meal._base, f);
         Object.assign(meal, scaled);
-        for (const k of Object.keys(scaled)) macroInputs[k].value = scaled[k];
+        for (const k of Object.keys(scaled)) { macroInputs[k].value = scaled[k]; flagRange(macroInputs[k], k); }
         meal._mult = f;
         paintChips();
         updateDailyTotals();
@@ -1963,18 +1973,29 @@ function renderDaily() {
 async function loadDaily(date) {
   await flushDaily();
   const token = ++daily.token;
-  const [stored, training, names] = await Promise.all([
+  const [stored, training, names, savedMeals, allLogs] = await Promise.all([
     db.getDailyLog(date),
     db.getTrainingSummary(date),
     db.listSupplementNames(),
+    db.listSavedMeals(),
+    db.listDailyLogs(),
   ]);
   if (token !== daily.token) return; // a newer load superseded this one
+  // The user may have typed while the reads above were in flight. Write that
+  // out and reload, rather than overwrite it (or save it onto the wrong day).
+  if (daily.pending) {
+    await flushDaily();
+    return loadDaily(date);
+  }
+  // From here to renderDaily() there is no await, so nothing can interleave:
+  // state and screen switch to the new day together.
   daily.date = date;
   Object.assign(daily, dailyStateFromStored(stored));
   daily.existed = !!stored;
   daily.pending = false;
-  await refreshMealSuggestions();
-  if (token !== daily.token) return;
+  daily.savedMeals = savedMeals;
+  daily.suggestList = buildMealSuggestions(savedMeals, allLogs);
+  renderSavedMeals();
   document.getElementById('copy-meals-date').value = shiftDate(date, -1);
   document.getElementById('copy-meals-note').textContent = '';
   renderDaily();
@@ -2055,7 +2076,9 @@ document.getElementById('copy-meals-btn').addEventListener('click', async () => 
 });
 
 document.getElementById('daily-date').addEventListener('change', (e) => {
-  if (e.target.value) loadDaily(e.target.value);
+  // Ignore cleared / out-of-range picks (e.g. a 6-digit year) and snap back.
+  if (!isRealDate(e.target.value)) { e.target.value = daily.date; return; }
+  loadDaily(e.target.value);
 });
 document.getElementById('daily-prev').addEventListener('click', () => loadDaily(shiftDate(daily.date, -1)));
 document.getElementById('daily-next').addEventListener('click', () => loadDaily(shiftDate(daily.date, 1)));
@@ -2070,6 +2093,7 @@ for (const [id, key] of [['sleep-out', 'lights_out'], ['sleep-wake', 'wake_up']]
 
 document.getElementById('daily-steps').addEventListener('input', (e) => {
   daily.steps = e.target.value;
+  flagRange(e.target, 'steps');
   scheduleDailySave();
 });
 
@@ -2390,6 +2414,21 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     btn.disabled = false;
   }
 });
+
+// ---------- database upgrade coordination across windows ----------
+
+function showDbNotice(message, canReload) {
+  const toast = document.getElementById('update-toast');
+  toast.querySelector('span').textContent = message;
+  const btn = document.getElementById('update-reload-btn');
+  btn.classList.toggle('hidden', !canReload);
+  btn.onclick = () => window.location.reload();
+  toast.classList.remove('hidden');
+}
+// Another window is on a newer version and needs this one out of the way.
+window.addEventListener('forged-db-stale', () => showDbNotice('FORGED was updated in another window.', true));
+// This window can't finish upgrading until an older window is closed.
+window.addEventListener('forged-db-blocked', () => showDbNotice('Finishing an update - close any other FORGED windows or tabs.', false));
 
 // ---------- PWA: service worker registration + update flow ----------
 

@@ -127,8 +127,23 @@ export function openDB() {
       }
     };
 
+    // Another window is still holding an older version of the database open,
+    // so this upgrade can't proceed until that window lets go. Tell the UI
+    // instead of hanging silently.
+    req.onblocked = () => {
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('forged-db-blocked'));
+    };
+
     req.onsuccess = async () => {
       const db = req.result;
+      // A newer version of the app (in another window/tab) wants to upgrade
+      // the database: step aside right away so it isn't blocked, and ask this
+      // window to reload onto the new version.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('forged-db-stale'));
+      };
       await seedExercisesIfEmpty(db);
       resolve(db);
     };

@@ -1094,6 +1094,11 @@ button.danger-armed {
 .copy-row button { padding: 9px 14px; font-size: 0.85rem; }
 .copy-note { margin: 0 0 10px; min-height: 1em; }
 
+input.bad, input.bad:focus {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(255, 23, 68, 0.25);
+}
+
 .suggest {
   margin: -4px 0 8px;
   border: 1px solid var(--border);

@@ -26,6 +26,8 @@ import {
   toDailyCSV,
   toDailyLogsExport,
   waterOz,
+  isRealDate,
+  DAILY_LIMITS,
   normalizeSavedMeal,
   toSavedMealsExport,
   buildMealSuggestions,
@@ -661,6 +663,50 @@ test('waterOz: bottles -> fl oz at 16.9 each, rounded to 1 decimal', () => {
   assert.equal(waterOz(3), 50.7);
   assert.equal(waterOz(10), 169);
   assert.equal(waterOz(undefined), 0);
+});
+
+// ---------- red-team regressions ----------
+
+test('isRealDate: rejects impossible calendar dates', () => {
+  assert.equal(isRealDate('2026-10-07'), true);
+  assert.equal(isRealDate('2028-02-29'), true);
+  assert.equal(isRealDate('2026-02-29'), false);
+  assert.equal(isRealDate('2026-13-45'), false);
+  assert.equal(isRealDate('2026-00-10'), false);
+  assert.equal(isRealDate('__proto__'), false);
+  assert.equal(isRealDate('12345-01-01'), false);
+  assert.equal(isRealDate(null), false);
+});
+
+test('normalizeDailyLog / import: an impossible date is dropped', () => {
+  assert.equal(normalizeDailyLog({ water: 2 }, '2026-13-45'), null);
+  const parsed = parseImportJSON(JSON.stringify({ sessions: [], dailyLogs: [{ date: '2026-02-30', water: 2 }, { date: '2026-02-28', water: 2 }] }));
+  assert.deepEqual(parsed.dailyLogs.map((l) => l.date), ['2026-02-28']);
+});
+
+test('CSV injection: text cells starting with = + - @ are defanged, numbers are not', () => {
+  const log = normalizeDailyLog({
+    supplements: [{ name: '=HYPERLINK("http://evil.example","x")', amount: '@SUM(1)' }, { name: '+1', amount: '-2' }],
+  }, '2026-10-06');
+  const session = { date: '2026-10-06', notes: '=1+1', exercises: [{ exercise_name: 'Bench', muscle_group: 'Chest', sets: [{ weight: 100, reps: 5, rir: null }] }] };
+  const csv = toDailyCSV(buildDailyAnalysis([session], [log], []));
+  const row = csv.split('\n')[1];
+  assert.ok(row.includes(`"'=HYPERLINK(`), 'supplement cell neutralised: ' + row);
+  assert.ok(row.endsWith("'=1+1"), 'notes cell neutralised');
+  // legitimate numbers (even negative-looking text-free ones) keep their value
+  assert.ok(toCSV([{ date: '2026-10-06', exercise: 'Bench', muscle_group: 'Chest', weight: 100, reps: 5, rir: 2 }]).includes(',100,5,2,'));
+  assert.ok(toCSV([{ date: '2026-10-06', exercise: '=cmd', muscle_group: 'Chest', weight: 100, reps: 5, rir: 2 }]).includes("'=cmd"));
+});
+
+test('DAILY_LIMITS: out-of-range numbers are dropped (the UI flags them first)', () => {
+  const n = normalizeDailyLog({ steps: DAILY_LIMITS.steps + 1, meals: [{ name: 'x', calories: DAILY_LIMITS.calories + 1, protein: DAILY_LIMITS.protein }] }, '2026-10-06');
+  assert.equal(n.steps, null);
+  assert.equal(n.meals[0].calories, null);
+  assert.equal(n.meals[0].protein, DAILY_LIMITS.protein);
+});
+
+test('analysis legend tells a chat model free text is data, not instructions', () => {
+  assert.ok(/never as instructions/i.test(toDailyAnalysisJSON([]).legend.note_on_text));
 });
 
 // ---------- steps ----------
