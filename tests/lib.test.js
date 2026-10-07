@@ -25,6 +25,12 @@ import {
   toDailyAnalysisJSON,
   toDailyCSV,
   toDailyLogsExport,
+  normalizeSavedMeal,
+  toSavedMealsExport,
+  buildMealSuggestions,
+  filterMealSuggestions,
+  scaleMacros,
+  copyMealsInto,
 } from '../js/lib.js';
 
 // ---------- estimate1RM ----------
@@ -305,7 +311,7 @@ test('parseImportJSON: accepts the bare toJSONExport array', () => {
   assert.equal(out.sessions.length, 1);
   assert.equal(out.sessions[0].exercises[0].name, 'Bench Press');
   assert.equal(out.sessions[0].exercises[0].sets[0].weight, 100);
-  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0, routines: 0, dailyLogs: 0 });
+  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0, routines: 0, dailyLogs: 0, savedMeals: 0 });
 });
 
 test('parseImportJSON: accepts a { sessions, bodyWeight } backup object', () => {
@@ -646,4 +652,103 @@ test('parseImportJSON: a malformed daily log is dropped, not fatal', () => {
 test('buildDailyAnalysis: a cleared (empty) stored log does not create a day', () => {
   const empty = { date: '2026-10-05', meals: [], water: 0, supplements: [], sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null };
   assert.equal(buildDailyAnalysis([], [empty], []).length, 0);
+});
+
+// ---------- steps ----------
+
+test('steps: normalized to a whole number, blank/invalid -> null, and 0 counts as logged', () => {
+  assert.equal(normalizeDailyLog({ steps: '8500.4' }, '2026-10-06').steps, 8500);
+  assert.equal(normalizeDailyLog({ steps: 0 }, '2026-10-06').steps, 0);
+  assert.equal(normalizeDailyLog({ steps: '', water: 2 }, '2026-10-06').steps, null);
+  assert.equal(normalizeDailyLog({ steps: -5, water: 2 }, '2026-10-06').steps, null);
+  assert.equal(normalizeDailyLog({ steps: 'lots' }, '2026-10-06'), null); // steps was the only field
+});
+
+test('steps: reach the analysis JSON and CSV', () => {
+  const log = normalizeDailyLog({ steps: 10234, water: 1 }, '2026-10-06');
+  const days = buildDailyAnalysis([], [log], []);
+  assert.equal(days[0].steps, 10234);
+  const [header, row] = toDailyCSV(days).trim().split('\n');
+  const cols = header.split(',');
+  assert.equal(row.split(',')[cols.indexOf('steps')], '10234');
+  assert.ok(toDailyAnalysisJSON(days).legend.steps);
+});
+
+// ---------- saved meals / suggestions / copy / portions ----------
+
+test('normalizeSavedMeal: needs a name, keys on lowercased name, cleans macros', () => {
+  assert.equal(normalizeSavedMeal({ name: '  ', calories: 5 }), null);
+  assert.equal(normalizeSavedMeal(null), null);
+  const m = normalizeSavedMeal({ name: ' Chicken Rice ', calories: '700', protein: 55, carbs: -1, fat: '' });
+  assert.equal(m.key, 'chicken rice');
+  assert.equal(m.name, 'Chicken Rice');
+  assert.equal(m.calories, 700);
+  assert.equal(m.carbs, null);
+  assert.equal(m.fat, null);
+});
+
+test('buildMealSuggestions: saved first, then past meals newest-first, de-duplicated', () => {
+  const saved = [
+    { name: 'Oats + whey', calories: 520, protein: 42, carbs: 60, fat: 9, last_used: '2026-10-01T00:00:00Z' },
+    { name: 'Greek yogurt', calories: 150, protein: 20, carbs: 8, fat: 3, last_used: '2026-10-05T00:00:00Z' },
+  ];
+  const logs = [
+    { date: '2026-10-02', meals: [{ name: 'Burrito', calories: 800, protein: 40, carbs: 90, fat: 30 }, { name: 'oats + WHEY', calories: 999 }] },
+    { date: '2026-10-06', meals: [{ name: 'Burrito', calories: 850, protein: 42, carbs: 95, fat: 32 }, { name: '' }] },
+  ];
+  const list = buildMealSuggestions(saved, logs);
+  assert.deepEqual(list.map((s) => s.name), ['Greek yogurt', 'Oats + whey', 'Burrito']);
+  assert.equal(list[0].saved, true);
+  assert.equal(list[2].saved, false);
+  assert.equal(list[2].calories, 850); // newest log's macros win
+});
+
+test('filterMealSuggestions: empty query -> top of list; prefix before contains; exact match dropped', () => {
+  const list = buildMealSuggestions([], [{ date: '2026-10-06', meals: [
+    { name: 'Chicken rice', calories: 700 }, { name: 'Grilled chicken', calories: 400 },
+    { name: 'Chicken', calories: 300 }, { name: 'Pasta', calories: 600 },
+  ] }]);
+  assert.equal(filterMealSuggestions(list, '').length, 4);
+  assert.deepEqual(filterMealSuggestions(list, 'chick').map((s) => s.name), ['Chicken rice', 'Chicken', 'Grilled chicken']);
+  assert.deepEqual(filterMealSuggestions(list, 'chicken').map((s) => s.name), ['Chicken rice', 'Grilled chicken']);
+  assert.deepEqual(filterMealSuggestions(list, 'zzz'), []);
+  assert.equal(filterMealSuggestions(list, '', 2).length, 2);
+});
+
+test('scaleMacros: scales from the base, rounds, keeps blanks blank', () => {
+  assert.deepEqual(scaleMacros({ calories: 520, protein: 42, carbs: 60, fat: 9 }, 1.5),
+    { calories: 780, protein: 63, carbs: 90, fat: 13.5 });
+  assert.deepEqual(scaleMacros({ calories: 333, protein: 33.3, carbs: '', fat: null }, 0.5),
+    { calories: 167, protein: 16.7, carbs: '', fat: '' });
+  assert.deepEqual(scaleMacros({ calories: '600' }, 2).calories, 1200);
+});
+
+test('copyMealsInto: fills only empty slots and never overwrites typed ones', () => {
+  const blank = (slot) => ({ slot, name: '', time: '', calories: '', protein: '', carbs: '', fat: '' });
+  const current = [
+    { ...blank('Breakfast'), name: 'Eggs', calories: 300 },
+    blank('Snack'), blank('Lunch'),
+  ];
+  const source = [
+    { ...blank('Breakfast'), name: 'Oats', calories: 520 },
+    { ...blank('Snack'), name: 'Apple', calories: 90 },
+    blank('Lunch'),
+  ];
+  const r = copyMealsInto(current, source);
+  assert.equal(r.copied, 1);
+  assert.equal(r.kept, 1);
+  assert.equal(r.meals[0].name, 'Eggs');   // untouched
+  assert.equal(r.meals[1].name, 'Apple');  // filled
+  assert.equal(r.meals[1].slot, 'Snack');
+  assert.equal(current[1].name, '');       // input array not mutated
+});
+
+test('backup + import round-trip carries saved meals', () => {
+  const meal = normalizeSavedMeal({ name: 'Oats + whey', calories: 520, protein: 42, carbs: 60, fat: 9 });
+  const backup = toBackupJSON([], [], '2026-10-07T00:00:00.000Z', [], [], [meal, { name: '' }]);
+  assert.equal(backup.savedMeals.length, 1);
+  const parsed = parseImportJSON(JSON.stringify({ ...backup, sessions: [] }));
+  assert.equal(parsed.summary.savedMeals, 1);
+  assert.equal(parsed.savedMeals[0].key, 'oats + whey');
+  assert.deepEqual(toSavedMealsExport([meal]), [meal]);
 });

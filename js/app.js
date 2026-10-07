@@ -5,6 +5,8 @@ import {
   toRoutinesExport, pickActiveRoutine, highestMilestone, nextMilestone,
   MEAL_SLOTS, WATER_SERVING_OZ, normalizeDailyLog, sumMeals, sleepHours,
   buildDailyAnalysis, toDailyAnalysisJSON, toDailyCSV, toDailyLogsExport,
+  normalizeSavedMeal, toSavedMealsExport, buildMealSuggestions, filterMealSuggestions,
+  scaleMacros, copyMealsInto,
 } from './lib.js';
 import * as db from './db.js';
 
@@ -1488,9 +1490,12 @@ const daily = {
   date: todayStr(),
   meals: [],
   water: 0,
+  steps: '',
   supplements: [],
   sleep: { lights_out: '', wake_up: '', quality: null },
   day_rating: null,
+  savedMeals: [],   // "My meals" library rows
+  suggestList: [],  // saved meals + distinct past meals, for the description box
   existed: false,   // a row for this date is already stored
   pending: false,   // edits not yet written
   timer: null,
@@ -1532,6 +1537,7 @@ function dailyStateFromStored(stored) {
   return {
     meals,
     water: (stored && stored.water) || 0,
+    steps: stored && stored.steps != null ? stored.steps : '',
     supplements: ((stored && stored.supplements) || []).map((s) => ({ name: s.name, amount: s.amount })),
     sleep: { lights_out: sl.lights_out || '', wake_up: sl.wake_up || '', quality: sl.quality ?? null },
     day_rating: stored && stored.day_rating != null ? stored.day_rating : null,
@@ -1558,7 +1564,7 @@ async function persistDaily() {
   daily.pending = false;
   const date = daily.date;
   const normalized = normalizeDailyLog(
-    { meals: daily.meals, water: daily.water, supplements: daily.supplements, sleep: daily.sleep, day_rating: daily.day_rating },
+    { meals: daily.meals, water: daily.water, steps: daily.steps, supplements: daily.supplements, sleep: daily.sleep, day_rating: daily.day_rating },
     date
   );
   try {
@@ -1569,14 +1575,22 @@ async function persistDaily() {
       // The user cleared everything: overwrite the old row with an empty one
       // so the old values don't reappear on the next load.
       await db.saveDailyLog(date, {
-        date, meals: [], water: 0, supplements: [],
+        date, meals: [], water: 0, steps: null, supplements: [],
         sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null,
       });
     }
     setDailySaved('Saved ✓', true);
+    refreshMealSuggestions(); // newly typed meals become suggestions right away
   } catch (err) {
     setDailySaved('Could not save: ' + err.message);
   }
+}
+
+async function refreshMealSuggestions() {
+  const [saved, logs] = await Promise.all([db.listSavedMeals(), db.listDailyLogs()]);
+  daily.savedMeals = saved;
+  daily.suggestList = buildMealSuggestions(saved, logs);
+  renderSavedMeals();
 }
 
 async function flushDaily() {
@@ -1640,7 +1654,68 @@ function renderDailyMeals() {
     name.maxLength = 300;
     name.value = meal.name;
     name.setAttribute('aria-label', meal.slot + ' description');
-    name.addEventListener('input', () => { meal.name = name.value; scheduleDailySave(); });
+    // Quick-fill: suggestions panel under the description box. Tapping one
+    // fills the name and all four macros; the ×0.5/×1/×1.5/×2 chips then scale
+    // them from that starting point; ★ Save adds the meal to My meals.
+    const sug = document.createElement('div');
+    sug.className = 'suggest hidden';
+    const macroInputs = {};
+    const chipBtns = [];
+    let saveBtn = null;
+
+    const paintChips = () => chipBtns.forEach((b) => b.classList.toggle('on', meal._mult === Number(b.dataset.f)));
+    const paintSaveBtn = () => { if (saveBtn) saveBtn.disabled = !meal.name.trim(); };
+    const hideSuggestions = () => sug.classList.add('hidden');
+
+    function applySuggestion(s) {
+      const macros = { calories: s.calories ?? '', protein: s.protein ?? '', carbs: s.carbs ?? '', fat: s.fat ?? '' };
+      meal.name = s.name;
+      name.value = s.name;
+      Object.assign(meal, macros);
+      for (const k of Object.keys(macros)) macroInputs[k].value = macros[k];
+      meal._base = macros;
+      meal._mult = 1;
+      paintChips();
+      paintSaveBtn();
+      hideSuggestions();
+      name.blur();
+      updateDailyTotals();
+      scheduleDailySave();
+      if (s.saved) db.touchSavedMeal(s.key).then(refreshMealSuggestions);
+    }
+
+    function showSuggestions() {
+      const items = filterMealSuggestions(daily.suggestList, name.value);
+      sug.textContent = '';
+      if (!items.length) { hideSuggestions(); return; }
+      for (const s of items) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'suggest-item';
+        const nm = document.createElement('span');
+        nm.className = 'sg-name';
+        if (s.saved) {
+          const star = document.createElement('span');
+          star.className = 'sg-star';
+          star.textContent = '★';
+          nm.appendChild(star);
+        }
+        nm.appendChild(document.createTextNode(s.name));
+        const mac = document.createElement('span');
+        mac.className = 'sg-macros';
+        mac.textContent = s.calories != null ? `${s.calories} cal · ${s.protein ?? '–'}P` : '';
+        btn.append(nm, mac);
+        // Keep focus in the input so the panel isn't dismissed before the tap lands.
+        btn.addEventListener('mousedown', (e) => e.preventDefault());
+        btn.addEventListener('click', () => applySuggestion(s));
+        sug.appendChild(btn);
+      }
+      sug.classList.remove('hidden');
+    }
+
+    name.addEventListener('input', () => { meal.name = name.value; paintSaveBtn(); showSuggestions(); scheduleDailySave(); });
+    name.addEventListener('focus', showSuggestions);
+    name.addEventListener('blur', () => setTimeout(hideSuggestions, 150));
 
     const grid = document.createElement('div');
     grid.className = 'macro-grid';
@@ -1655,12 +1730,65 @@ function renderDailyMeals() {
       inp.step = 'any';
       inp.value = meal[key];
       inp.setAttribute('aria-label', `${meal.slot} ${label}`);
-      inp.addEventListener('input', () => { meal[key] = inp.value; updateDailyTotals(); scheduleDailySave(); });
+      macroInputs[key] = inp;
+      inp.addEventListener('input', () => {
+        meal[key] = inp.value;
+        meal._base = null; // hand-edited numbers become the new starting point for the portion chips
+        meal._mult = null;
+        paintChips();
+        updateDailyTotals();
+        scheduleDailySave();
+      });
       cell.append(lab, inp);
       grid.appendChild(cell);
     }
 
-    wrap.append(head, name, grid);
+    const tools = document.createElement('div');
+    tools.className = 'meal-tools';
+    const toolsLabel = document.createElement('span');
+    toolsLabel.className = 'tools-label';
+    toolsLabel.textContent = 'Portion';
+    tools.appendChild(toolsLabel);
+    for (const f of [0.5, 1, 1.5, 2]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'portion-btn';
+      b.dataset.f = String(f);
+      b.textContent = '×' + f;
+      b.addEventListener('click', () => {
+        if (!meal._base) meal._base = { calories: meal.calories, protein: meal.protein, carbs: meal.carbs, fat: meal.fat };
+        if (!Object.values(meal._base).some((v) => v !== '' && v !== null && v !== undefined)) return;
+        const scaled = scaleMacros(meal._base, f);
+        Object.assign(meal, scaled);
+        for (const k of Object.keys(scaled)) macroInputs[k].value = scaled[k];
+        meal._mult = f;
+        paintChips();
+        updateDailyTotals();
+        scheduleDailySave();
+      });
+      chipBtns.push(b);
+      tools.appendChild(b);
+    }
+    saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'save-meal-btn';
+    saveBtn.textContent = '★ Save';
+    saveBtn.setAttribute('aria-label', 'Save to My meals');
+    saveBtn.addEventListener('click', async () => {
+      const n = normalizeSavedMeal({
+        name: meal.name, calories: meal.calories, protein: meal.protein, carbs: meal.carbs, fat: meal.fat,
+      });
+      if (!n) return;
+      await db.saveMeal(n);
+      await refreshMealSuggestions();
+      saveBtn.textContent = '★ Saved ✓';
+      setTimeout(() => { saveBtn.textContent = '★ Save'; }, 1500);
+    });
+    tools.appendChild(saveBtn);
+    paintSaveBtn();
+    paintChips();
+
+    wrap.append(head, name, sug, grid, tools);
     host.appendChild(wrap);
   });
   updateDailyTotals();
@@ -1824,6 +1952,7 @@ function renderDaily() {
   document.getElementById('daily-date').value = daily.date;
   document.getElementById('sleep-out').value = daily.sleep.lights_out;
   document.getElementById('sleep-wake').value = daily.sleep.wake_up;
+  document.getElementById('daily-steps').value = daily.steps;
   renderDailyMeals();
   renderDailyWater();
   renderDailySupps();
@@ -1844,6 +1973,10 @@ async function loadDaily(date) {
   Object.assign(daily, dailyStateFromStored(stored));
   daily.existed = !!stored;
   daily.pending = false;
+  await refreshMealSuggestions();
+  if (token !== daily.token) return;
+  document.getElementById('copy-meals-date').value = shiftDate(date, -1);
+  document.getElementById('copy-meals-note').textContent = '';
   renderDaily();
   renderDailyTraining(training);
   const list = document.getElementById('supp-names');
@@ -1855,6 +1988,71 @@ async function loadDaily(date) {
   }
   setDailySaved(stored ? 'Saved ✓' : 'Saves automatically', !!stored);
 }
+
+// My meals list (the library behind the ★ Save buttons). Removing one is a
+// two-tap confirm; it only removes the shortcut, never any logged day.
+function renderSavedMeals() {
+  const host = document.getElementById('saved-meals');
+  host.textContent = '';
+  if (!daily.savedMeals.length) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'Nothing saved yet.';
+    host.appendChild(note);
+    return;
+  }
+  for (const s of daily.savedMeals) {
+    const row = document.createElement('div');
+    row.className = 'saved-row';
+    const info = document.createElement('div');
+    info.className = 'saved-info';
+    const nm = document.createElement('div');
+    nm.className = 'saved-name';
+    nm.textContent = s.name;
+    const mac = document.createElement('div');
+    mac.className = 'saved-macros';
+    mac.textContent = `${s.calories ?? '–'} cal · ${s.protein ?? '–'}P · ${s.carbs ?? '–'}C · ${s.fat ?? '–'}F`;
+    info.append(nm, mac);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    let armed = null;
+    del.addEventListener('click', async () => {
+      if (!armed) {
+        del.textContent = 'Sure?';
+        del.classList.add('danger-armed');
+        armed = setTimeout(() => { armed = null; del.textContent = 'Remove'; del.classList.remove('danger-armed'); }, 3000);
+        return;
+      }
+      clearTimeout(armed);
+      await db.deleteSavedMeal(s.key);
+      await refreshMealSuggestions();
+    });
+    row.append(info, del);
+    host.appendChild(row);
+  }
+}
+
+// Copy another day's meals into today's empty slots (never overwrites a slot
+// that already has something in it).
+document.getElementById('copy-meals-btn').addEventListener('click', async () => {
+  const note = document.getElementById('copy-meals-note');
+  const from = document.getElementById('copy-meals-date').value;
+  if (!from) { note.textContent = 'Pick a day to copy from.'; return; }
+  if (from === daily.date) { note.textContent = 'That is the day you are on.'; return; }
+  const stored = await db.getDailyLog(from);
+  const source = dailyStateFromStored(stored).meals;
+  const r = copyMealsInto(daily.meals, source);
+  if (!r.copied && !r.kept) { note.textContent = 'No meals logged on that day.'; return; }
+  if (r.copied) {
+    daily.meals = r.meals;
+    renderDailyMeals();
+    scheduleDailySave();
+  }
+  note.textContent =
+    `Copied ${r.copied} meal${r.copied === 1 ? '' : 's'}` +
+    (r.kept ? `; kept ${r.kept} slot${r.kept === 1 ? '' : 's'} you'd already filled.` : '.');
+});
 
 document.getElementById('daily-date').addEventListener('change', (e) => {
   if (e.target.value) loadDaily(e.target.value);
@@ -1869,6 +2067,11 @@ for (const [id, key] of [['sleep-out', 'lights_out'], ['sleep-wake', 'wake_up']]
     scheduleDailySave();
   });
 }
+
+document.getElementById('daily-steps').addEventListener('input', (e) => {
+  daily.steps = e.target.value;
+  scheduleDailySave();
+});
 
 document.getElementById('supp-add').addEventListener('click', () => {
   daily.supplements.push({ name: '', amount: '' });
@@ -1931,6 +2134,7 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
     bodyWeight: bodyWeight.map((b) => ({ date: b.date, weight: b.weight })),
     routines: toRoutinesExport(routines),
     dailyLogs,
+    savedMeals: toSavedMealsExport(await db.listSavedMeals()),
     prHistory: prHistory
       .filter((h) => h.milestones.length)
       .map((h) => ({ exercise: h.exercise_name, muscle_group: h.muscle_group, milestones: h.milestones })),
@@ -2066,7 +2270,8 @@ document.getElementById('backup-json-btn').addEventListener('click', async () =>
     const bodyWeight = await db.listBodyWeight();      // no range = all time
     const routines = await db.listRoutines();
     const dailyLogs = await db.listDailyLogs();        // no range = all time
-    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString(), routines, dailyLogs);
+    const savedMeals = await db.listSavedMeals();
+    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString(), routines, dailyLogs, savedMeals);
     const json = JSON.stringify(backup, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -2139,6 +2344,7 @@ document.getElementById('import-btn').addEventListener('click', async () => {
   const extras = [];
   if (summary.bodyWeight) extras.push(`${summary.bodyWeight} body-weight entr${summary.bodyWeight === 1 ? 'y' : 'ies'}`);
   if (summary.routines) extras.push(`${summary.routines} routine${summary.routines === 1 ? '' : 's'}`);
+  if (summary.savedMeals) extras.push(`${summary.savedMeals} saved meal${summary.savedMeals === 1 ? '' : 's'}`);
   if (summary.dailyLogs) extras.push(`${summary.dailyLogs} daily log${summary.dailyLogs === 1 ? '' : 's'}`);
   const extraPhrase = extras.length ? ` plus ${extras.join(' and ')}` : '';
   const ok = confirm(
@@ -2160,6 +2366,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     if (r.notesFilled) parts.push(`${r.notesFilled} note${r.notesFilled === 1 ? '' : 's'} filled in`);
     if (r.notesSkipped) parts.push(`${r.notesSkipped} existing note${r.notesSkipped === 1 ? '' : 's'} kept`);
     if (r.bodyWeightSkipped) parts.push(`${r.bodyWeightSkipped} body-weight date${r.bodyWeightSkipped === 1 ? '' : 's'} already present`);
+    if (r.savedMealsAdded) parts.push(`${r.savedMealsAdded} saved meal${r.savedMealsAdded === 1 ? '' : 's'} added`);
+    if (r.savedMealsSkipped) parts.push(`${r.savedMealsSkipped} saved meal${r.savedMealsSkipped === 1 ? '' : 's'} already present`);
     if (r.dailyLogsAdded) parts.push(`${r.dailyLogsAdded} daily log${r.dailyLogsAdded === 1 ? '' : 's'} added`);
     if (r.dailyLogsSkipped) parts.push(`${r.dailyLogsSkipped} daily log date${r.dailyLogsSkipped === 1 ? '' : 's'} already present`);
     if (r.routinesAdded) parts.push(`${r.routinesAdded} routine${r.routinesAdded === 1 ? '' : 's'} added`);

@@ -335,8 +335,20 @@
 
     <div class="card">
       <div class="card-title">Nutrition</div>
+      <div class="copy-row">
+        <label for="copy-meals-date">Copy meals from</label>
+        <input id="copy-meals-date" type="date" />
+        <button id="copy-meals-btn" type="button" class="secondary">Copy</button>
+      </div>
+      <div id="copy-meals-note" class="daily-sub-label copy-note" aria-live="polite"></div>
       <div id="daily-meals"></div>
       <div id="daily-totals" class="daily-totals"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">My meals</div>
+      <div class="card-sub">Tap ★ Save on any meal above. Then tap a meal's description box to fill it in one tap.</div>
+      <div id="saved-meals"></div>
     </div>
 
     <div class="card">
@@ -344,6 +356,12 @@
       <div class="card-sub">Tap a circle for each 8-oz serving.</div>
       <div id="daily-water" class="water-row"></div>
       <div id="daily-water-label" class="daily-sub-label"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Steps</div>
+      <div class="card-sub">Total for the day, from your phone or watch.</div>
+      <input id="daily-steps" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 8500" aria-label="Steps" />
     </div>
 
     <div class="card">
@@ -399,7 +417,7 @@
     </div>
     <div class="card">
       <div class="card-title">Copy data (for chat analysis)</div>
-      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of <code>{ sessions, bodyWeight, routines, dailyLogs, prHistory }</code> in this range - paste directly into a chat with Claude for graphs/analysis.</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of <code>{ sessions, bodyWeight, routines, dailyLogs, savedMeals, prHistory }</code> in this range - paste directly into a chat with Claude for graphs/analysis.</div>
       <button id="export-json-btn" type="button" class="lime full-width">Copy JSON to clipboard</button>
       <div id="export-status" class="export-status"></div>
     </div>

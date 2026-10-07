@@ -290,7 +290,7 @@ export function toRoutinesExport(routines) {
 // toJSONExport stays a bare array (that output also gets pasted straight
 // into chats), so the file that must round-trip *everything* gets its own
 // shape here. `routines` is optional and last so older callers are unaffected.
-export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines, dailyLogs) {
+export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines, dailyLogs, savedMeals) {
   return {
     app: 'FORGED',
     version: 1,
@@ -299,6 +299,7 @@ export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines, dail
     bodyWeight: (bodyWeight || []).map((b) => ({ date: b.date, weight: b.weight })),
     routines: toRoutinesExport(routines),
     dailyLogs: toDailyLogsExport(dailyLogs),
+    savedMeals: toSavedMealsExport(savedMeals),
   };
 }
 
@@ -331,17 +332,19 @@ export function parseImportJSON(text) {
     importFail('that is not valid JSON.');
   }
 
-  let sessionsIn, bodyWeightIn, routinesIn, dailyLogsIn;
+  let sessionsIn, bodyWeightIn, routinesIn, dailyLogsIn, savedMealsIn;
   if (Array.isArray(raw)) {
     sessionsIn = raw;
     bodyWeightIn = [];
     routinesIn = [];
     dailyLogsIn = [];
+    savedMealsIn = [];
   } else if (raw && typeof raw === 'object' && Array.isArray(raw.sessions)) {
     sessionsIn = raw.sessions;
     bodyWeightIn = Array.isArray(raw.bodyWeight) ? raw.bodyWeight : [];
     routinesIn = Array.isArray(raw.routines) ? raw.routines : [];
     dailyLogsIn = Array.isArray(raw.dailyLogs) ? raw.dailyLogs : [];
+    savedMealsIn = Array.isArray(raw.savedMeals) ? raw.savedMeals : [];
   } else {
     importFail('expected a JSON array of sessions, or an object with a "sessions" array.');
   }
@@ -407,6 +410,7 @@ export function parseImportJSON(text) {
   const dailyLogs = dailyLogsIn
     .map((l) => normalizeDailyLog(l, l && l.date))
     .filter(Boolean);
+  const savedMeals = savedMealsIn.map(normalizeSavedMeal).filter(Boolean);
 
   const setCount = sessions.reduce(
     (n, s) => n + s.exercises.reduce((m, e) => m + e.sets.length, 0),
@@ -417,12 +421,14 @@ export function parseImportJSON(text) {
     bodyWeight,
     routines,
     dailyLogs,
+    savedMeals,
     summary: {
       sessions: sessions.length,
       sets: setCount,
       bodyWeight: bodyWeight.length,
       routines: routines.length,
       dailyLogs: dailyLogs.length,
+      savedMeals: savedMeals.length,
     },
   };
 }
@@ -497,7 +503,10 @@ export function normalizeDailyLog(raw, date) {
   if (day_rating !== null) day_rating = Math.round(day_rating / 10) * 10;
   if (day_rating !== null && day_rating < 10) day_rating = null;
 
-  const log = { date: d, meals, water, supplements, sleep, day_rating };
+  let steps = cleanNum(raw.steps, 200000);
+  if (steps !== null) steps = Math.round(steps);
+
+  const log = { date: d, meals, water, steps, supplements, sleep, day_rating };
   return isDailyLogEmpty(log) ? null : log;
 }
 
@@ -508,6 +517,7 @@ export function isDailyLogEmpty(log) {
     !(log.meals && log.meals.length) &&
     !(log.supplements && log.supplements.length) &&
     !log.water &&
+    log.steps == null &&
     !sleep.lights_out && !sleep.wake_up && sleep.quality == null &&
     log.day_rating == null
   );
@@ -586,6 +596,7 @@ export function buildDailyAnalysis(sessions, dailyLogs, bodyWeight) {
       const sl = log.sleep || {};
       out.nutrition = { meals: log.meals || [], totals: sumMeals(log.meals) };
       out.water_oz = (log.water || 0) * WATER_SERVING_OZ;
+      out.steps = log.steps ?? null;
       out.supplements = log.supplements || [];
       out.sleep = {
         lights_out: sl.lights_out || null,
@@ -597,6 +608,7 @@ export function buildDailyAnalysis(sessions, dailyLogs, bodyWeight) {
     } else {
       out.nutrition = null;
       out.water_oz = null;
+      out.steps = null;
       out.supplements = [];
       out.sleep = null;
       out.day_rating_pct = null;
@@ -616,6 +628,7 @@ export function toDailyAnalysisJSON(days, exportedAtISO) {
       training: 'Lifting done that date. volume = sum of weight x reps over all sets (lb). rir = reps in reserve.',
       nutrition: 'meals as logged (calories in kcal, protein/carbs/fat in grams); totals = sum of the logged meals. Days with nothing logged have nutrition: null.',
       water_oz: 'Water in ounces (logged as 8-oz servings).',
+      steps: 'Total steps walked that day, as entered by hand (null if not logged).',
       sleep: 'The night that ended on the morning of this date. hours is computed from lights_out to wake_up.',
       day_rating_pct: 'Self-rated "on track with goals" for the day, 10-100.',
       body_weight: 'Body weight logged that date, if any.',
@@ -630,7 +643,7 @@ export function toDailyCSV(days) {
     'date', 'weekday', 'trained', 'sets', 'reps', 'volume', 'muscle_groups',
     'calories', 'protein_g', 'carbs_g', 'fat_g', 'meals_logged', 'water_oz',
     'supplements', 'lights_out', 'wake_up', 'sleep_hours', 'sleep_quality',
-    'day_rating_pct', 'body_weight', 'session_notes',
+    'day_rating_pct', 'steps', 'body_weight', 'session_notes',
   ];
   const lines = [header.join(',')];
   for (const d of days) {
@@ -656,10 +669,124 @@ export function toDailyCSV(days) {
       sl.hours ?? '',
       sl.quality_1_to_10 ?? '',
       d.day_rating_pct ?? '',
+      d.steps ?? '',
       d.body_weight ?? '',
       d.training.notes,
     ];
     lines.push(row.map(csvEscape).join(','));
   }
   return lines.join('\n') + '\n';
+}
+
+// ---------- saved meals / suggestions / copy-a-day / portion scaling ----------
+
+// A "My Meals" entry: { key (lowercased name, unique), name, calories, protein,
+// carbs, fat, last_used (ISO string or '') }. Returns null without a name.
+export function normalizeSavedMeal(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = cleanText(raw.name, 300);
+  if (!name) return null;
+  return {
+    key: name.toLowerCase(),
+    name,
+    calories: cleanNum(raw.calories, 20000),
+    protein: cleanNum(raw.protein, 2000),
+    carbs: cleanNum(raw.carbs, 5000),
+    fat: cleanNum(raw.fat, 2000),
+    last_used: typeof raw.last_used === 'string' ? raw.last_used.slice(0, 40) : '',
+  };
+}
+
+export function toSavedMealsExport(savedMeals) {
+  return (savedMeals || [])
+    .map(normalizeSavedMeal)
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// One de-duplicated pick-list for the meal description box: saved meals first
+// (most recently used first), then every distinct meal name from past daily
+// logs (newest log first, so the macros shown are the latest you logged).
+export function buildMealSuggestions(savedMeals, dailyLogs) {
+  const out = [];
+  const seen = new Set();
+  const saved = [...(savedMeals || [])].sort((a, b) => (b.last_used || '').localeCompare(a.last_used || ''));
+  for (const s of saved) {
+    const key = String(s.name || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, name: s.name, calories: s.calories ?? null, protein: s.protein ?? null, carbs: s.carbs ?? null, fat: s.fat ?? null, saved: true });
+  }
+  const logs = [...(dailyLogs || [])].sort((a, b) => b.date.localeCompare(a.date));
+  for (const l of logs) {
+    for (const m of l.meals || []) {
+      const name = String(m.name || '').trim();
+      const key = name.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, name, calories: m.calories ?? null, protein: m.protein ?? null, carbs: m.carbs ?? null, fat: m.fat ?? null, saved: false });
+    }
+  }
+  return out;
+}
+
+// Narrow the pick-list for what's been typed. Empty query -> the top of the
+// list; otherwise names starting with the query first, then names containing
+// it. A suggestion identical to the query is dropped (nothing left to fill).
+export function filterMealSuggestions(list, query, limit = 6) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return (list || []).slice(0, limit);
+  const starts = [];
+  const contains = [];
+  for (const s of list || []) {
+    if (s.key === q) continue;
+    if (s.key.startsWith(q)) starts.push(s);
+    else if (s.key.includes(q)) contains.push(s);
+  }
+  return starts.concat(contains).slice(0, limit);
+}
+
+// Scale a meal's macros by a portion factor (calories to whole numbers, the
+// rest to 1 decimal). Blank (null / '') macros stay blank.
+export function scaleMacros(base, factor) {
+  const f = Number(factor);
+  const out = {};
+  for (const k of ['calories', 'protein', 'carbs', 'fat']) {
+    const v = base ? base[k] : null;
+    if (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) || !Number.isFinite(f)) {
+      out[k] = '';
+      continue;
+    }
+    const n = Number(v) * f;
+    out[k] = k === 'calories' ? Math.round(n) : Math.round(n * 10) / 10;
+  }
+  return out;
+}
+
+export function mealHasContent(m) {
+  if (!m) return false;
+  const blank = (v) => v === '' || v === null || v === undefined;
+  return !!(String(m.name || '').trim() || m.time || !blank(m.calories) || !blank(m.protein) || !blank(m.carbs) || !blank(m.fat));
+}
+
+// Copy another day's meals into the current day's meal slots. Only fills
+// slots that are still empty - anything already typed is kept untouched.
+// Both arrays use the Daily-tab shape ({slot,name,time,calories,...}).
+export function copyMealsInto(current, source) {
+  const meals = (current || []).map((m) => ({ ...m }));
+  let copied = 0;
+  let kept = 0;
+  (source || []).forEach((src, i) => {
+    if (!mealHasContent(src)) return;
+    if (i >= meals.length) {
+      meals.push({ ...src });
+      copied++;
+    } else if (!mealHasContent(meals[i])) {
+      meals[i] = { ...src, slot: meals[i].slot };
+      copied++;
+    } else {
+      kept++;
+    }
+  });
+  return { meals, copied, kept };
 }

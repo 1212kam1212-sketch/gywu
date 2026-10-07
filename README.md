@@ -130,6 +130,7 @@ and idempotent**:
   existing routine of the same name is left exactly as it is
 - a daily log is added only for a date that has none yet — an existing
   day's log is never overwritten
+- a saved meal is added only if no saved meal has that name yet
 
 Nothing is ever edited in place or deleted, so re-importing the same file
 is a no-op and a half-finished import can simply be run again.
@@ -176,7 +177,13 @@ is a no-op and a half-finished import can simply be run again.
   tracker in 8-oz servings; supplements (name + amount, with autosuggest
   and a "Same as yesterday" shortcut); sleep (lights out, wake up, quality
   1–10, hours computed across midnight — the night that ended that
-  morning); and a "rate your day" 10–100% score. That day's workout is
+  morning); a **steps** total for the day; and a "rate your day" 10–100%
+  score. To cut down typing: **auto-suggest** on every meal description
+  (tap the box to see your saved and recent meals; one tap fills the name
+  and all four macros), **★ Save** to keep a meal in **My meals**,
+  **×0.5 / ×1 / ×1.5 / ×2 portion chips** that scale a meal's macros, and
+  **Copy meals from** any other day (fills only empty slots, never
+  overwrites). That day's workout is
   shown read-only at the top. Everything autosaves; use the arrows or date
   picker to log or fix other days.
 - **Export / Import** — CSV and JSON export, a full downloadable backup
@@ -191,7 +198,7 @@ every set on every view.
 
 ## Schema versions
 
-`DB_VERSION` in `js/db.js` is currently **4**. The `onupgradeneeded`
+`DB_VERSION` in `js/db.js` is currently **5**. The `onupgradeneeded`
 handler only ever *creates* stores it doesn't already find, so bumping the
 version on an existing database adds the new store(s) and leaves every
 existing store and its rows untouched:
@@ -204,3 +211,5 @@ existing store and its rows untouched:
 - **v4** — adds `dailyLogs` (one record per date, keyed by `YYYY-MM-DD`:
   meals, water, supplements, sleep, day rating). Never joined to or
   written into `sessions`/`sets`.
+- **v5** — adds `savedMeals` (the "My meals" quick-fill library, keyed by
+  lowercased meal name).
