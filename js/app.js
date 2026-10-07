@@ -3,7 +3,7 @@
 import {
   toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV,
   toRoutinesExport, pickActiveRoutine, highestMilestone, nextMilestone,
-  MEAL_SLOTS, waterOz, normalizeDailyLog, sumMeals, sleepHours,
+  MEAL_SLOTS, waterOz, normalizeDailyLog, sumMeals, sleepHoursOf,
   buildDailyAnalysis, toDailyAnalysisJSON, toDailyCSV, toDailyLogsExport,
   normalizeSavedMeal, toSavedMealsExport, buildMealSuggestions, filterMealSuggestions,
   scaleMacros, copyMealsInto, isRealDate, DAILY_LIMITS,
@@ -1492,7 +1492,7 @@ const daily = {
   water: 0,
   steps: '',
   supplements: [],
-  sleep: { lights_out: '', wake_up: '', quality: null },
+  sleep: { hours: '', quality: null },
   day_rating: null,
   savedMeals: [],   // "My meals" library rows
   suggestList: [],  // saved meals + distinct past meals, for the description box
@@ -1539,7 +1539,8 @@ function dailyStateFromStored(stored) {
     water: (stored && stored.water) || 0,
     steps: stored && stored.steps != null ? stored.steps : '',
     supplements: ((stored && stored.supplements) || []).map((s) => ({ name: s.name, amount: s.amount })),
-    sleep: { lights_out: sl.lights_out || '', wake_up: sl.wake_up || '', quality: sl.quality ?? null },
+    // sleepHoursOf also converts older entries saved with lights-out/wake-up times
+    sleep: { hours: sleepHoursOf(sl) ?? '', quality: sl.quality ?? null },
     day_rating: stored && stored.day_rating != null ? stored.day_rating : null,
   };
 }
@@ -1576,7 +1577,7 @@ async function persistDaily() {
       // so the old values don't reappear on the next load.
       await db.saveDailyLog(date, {
         date, meals: [], water: 0, steps: null, supplements: [],
-        sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null,
+        sleep: { hours: null, quality: null }, day_rating: null,
       });
     }
     setDailySaved('Saved ✓', true);
@@ -1873,15 +1874,6 @@ function renderDailySupps() {
   });
 }
 
-function paintSleepHours() {
-  const h = sleepHours(daily.sleep.lights_out, daily.sleep.wake_up);
-  const el = document.getElementById('sleep-hours');
-  if (h === null) { el.textContent = ''; return; }
-  const whole = Math.floor(h);
-  const mins = Math.round((h - whole) * 60);
-  el.textContent = `${whole}h ${mins}m asleep`;
-}
-
 function paintToggleRow(containerId, current) {
   document.querySelectorAll(`#${containerId} button`).forEach((b) => {
     b.classList.toggle('on', Number(b.dataset.value) === current);
@@ -1960,14 +1952,12 @@ function renderDailyTraining(t) {
 
 function renderDaily() {
   document.getElementById('daily-date').value = daily.date;
-  document.getElementById('sleep-out').value = daily.sleep.lights_out;
-  document.getElementById('sleep-wake').value = daily.sleep.wake_up;
+  document.getElementById('sleep-hours').value = daily.sleep.hours;
   document.getElementById('daily-steps').value = daily.steps;
   renderDailyMeals();
   renderDailyWater();
   renderDailySupps();
   renderDailyToggleRows();
-  paintSleepHours();
 }
 
 async function loadDaily(date) {
@@ -2083,13 +2073,11 @@ document.getElementById('daily-date').addEventListener('change', (e) => {
 document.getElementById('daily-prev').addEventListener('click', () => loadDaily(shiftDate(daily.date, -1)));
 document.getElementById('daily-next').addEventListener('click', () => loadDaily(shiftDate(daily.date, 1)));
 
-for (const [id, key] of [['sleep-out', 'lights_out'], ['sleep-wake', 'wake_up']]) {
-  document.getElementById(id).addEventListener('input', (e) => {
-    daily.sleep[key] = e.target.value;
-    paintSleepHours();
-    scheduleDailySave();
-  });
-}
+document.getElementById('sleep-hours').addEventListener('input', (e) => {
+  daily.sleep.hours = e.target.value;
+  flagRange(e.target, 'sleep_hours');
+  scheduleDailySave();
+});
 
 document.getElementById('daily-steps').addEventListener('input', (e) => {
   daily.steps = e.target.value;

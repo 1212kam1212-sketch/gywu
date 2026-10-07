@@ -175,9 +175,8 @@ is a no-op and a half-finished import can simply be run again.
   (Breakfast, Snack, Lunch, Snack, Dinner, Snack) each with a description,
   time and calories/protein/carbs/fat, with running daily totals; a water
   tracker in 16.9 fl oz bottles; supplements (name + amount, with autosuggest
-  and a "Same as yesterday" shortcut); sleep (lights out, wake up, quality
-  1–10, hours computed across midnight — the night that ended that
-  morning); a **steps** total for the day; and a "rate your day" 10–100%
+  and a "Same as yesterday" shortcut); sleep (hours slept and quality
+  1–10 — the night that ended that morning); a **steps** total for the day; and a "rate your day" 10–100%
   score. To cut down typing: **auto-suggest** on every meal description
   (tap the box to see your saved and recent meals; one tap fills the name
   and all four macros), **★ Save** to keep a meal in **My meals**,
