@@ -316,6 +316,89 @@
     </div>
   </section>
 
+  <!-- DAILY LOG -->
+  <section id="view-daily" class="view">
+    <div class="card">
+      <div class="card-title">Daily log</div>
+      <div class="daily-datebar">
+        <button id="daily-prev" type="button" class="secondary" aria-label="Previous day">&#8249;</button>
+        <input id="daily-date" type="date" aria-label="Day" />
+        <button id="daily-next" type="button" class="secondary" aria-label="Next day">&#8250;</button>
+      </div>
+      <div id="daily-saved" class="daily-saved" aria-live="polite">Saves automatically</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Training that day</div>
+      <div id="daily-training"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Nutrition</div>
+      <div class="copy-row">
+        <label for="copy-meals-date">Copy meals from</label>
+        <input id="copy-meals-date" type="date" />
+        <button id="copy-meals-btn" type="button" class="secondary">Copy</button>
+      </div>
+      <div id="copy-meals-note" class="daily-sub-label copy-note" aria-live="polite"></div>
+      <div id="daily-meals"></div>
+      <div id="daily-totals" class="daily-totals"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">My meals</div>
+      <div class="card-sub">Tap ★ Save on any meal above. Then tap a meal's description box to fill it in one tap.</div>
+      <div id="saved-meals"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Water</div>
+      <div class="card-sub">Tap a circle for each 16.9 fl oz bottle.</div>
+      <div id="daily-water" class="water-row"></div>
+      <div id="daily-water-label" class="daily-sub-label"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Steps</div>
+      <div class="card-sub">Total for the day, from your phone or watch.</div>
+      <input id="daily-steps" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 8500" aria-label="Steps" />
+    </div>
+
+    <div class="card">
+      <div class="card-title">Supplements</div>
+      <div id="daily-supps"></div>
+      <datalist id="supp-names"></datalist>
+      <div class="supp-actions">
+        <button id="supp-add" type="button" class="secondary">+ Add supplement</button>
+        <button id="supp-copy" type="button" class="secondary">Same as yesterday</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Sleep</div>
+      <div class="card-sub">The night that ended this morning.</div>
+      <div class="set-input-row">
+        <div class="input-group">
+          <label for="sleep-out">Lights out</label>
+          <input id="sleep-out" type="time" />
+        </div>
+        <div class="input-group">
+          <label for="sleep-wake">Wake up</label>
+          <input id="sleep-wake" type="time" />
+        </div>
+      </div>
+      <div id="sleep-hours" class="daily-sub-label"></div>
+      <div class="field-label">Quality</div>
+      <div id="sleep-quality" class="dot-row"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Rate your day</div>
+      <div class="card-sub">On track with goals?</div>
+      <div id="day-rating" class="rating-row"></div>
+    </div>
+  </section>
+
   <!-- EXPORT -->
   <section id="view-export" class="view">
     <div class="card">
@@ -334,9 +417,17 @@
     </div>
     <div class="card">
       <div class="card-title">Copy data (for chat analysis)</div>
-      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of <code>{ sessions, bodyWeight, prHistory }</code> in this range - paste directly into a chat with Claude for graphs/analysis.</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">JSON dump of <code>{ sessions, bodyWeight, routines, dailyLogs, savedMeals, prHistory }</code> in this range - paste directly into a chat with Claude for graphs/analysis.</div>
       <button id="export-json-btn" type="button" class="lime full-width">Copy JSON to clipboard</button>
       <div id="export-status" class="export-status"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Daily log + training (for analysis)</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">One record per day in the date range above: that day's workout, meals and macros, water, supplements, sleep, day rating and body weight, side by side. Paste the JSON into a chat with Claude for feedback, or open the CSV in a spreadsheet.</div>
+      <button id="export-daily-json-btn" type="button" class="lime full-width">Copy daily log JSON</button>
+      <button id="export-daily-csv-btn" type="button" class="lime full-width" style="margin-top:10px;">Download daily log CSV</button>
+      <div id="export-daily-status" class="export-status"></div>
     </div>
 
     <div class="card">
@@ -347,7 +438,7 @@
     </div>
     <div class="card">
       <div class="card-title">Backup file</div>
-      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">Every session and body-weight entry as a downloadable <code>.json</code> file. Full history regardless of the date range above - this is the file to keep as a backup and to re-import later.</div>
+      <div class="empty-note" style="text-align:left; padding: 0 0 10px;">Every session, body-weight entry, routine and daily log as a downloadable <code>.json</code> file. Full history regardless of the date range above - this is the file to keep as a backup and to re-import later.</div>
       <button id="backup-json-btn" type="button" class="lime full-width">Download backup (JSON)</button>
       <div id="backup-status" class="export-status"></div>
     </div>
@@ -374,6 +465,7 @@
   <button class="tab-btn" data-view="view-prs">PRs</button>
   <button class="tab-btn" data-view="view-volume">Volume</button>
   <button class="tab-btn" data-view="view-bodyweight">Body Wt</button>
+  <button class="tab-btn" data-view="view-daily">Daily</button>
   <button class="tab-btn" data-view="view-export">Export</button>
 </nav>
 

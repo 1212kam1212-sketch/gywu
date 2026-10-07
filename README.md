@@ -91,14 +91,20 @@ from the **Export** tab:
 
 - **Download CSV** — one row per set: `date, exercise, muscle_group,
   weight, reps, rir, e1rm`. Opens directly in any spreadsheet app.
-- **Copy JSON** — copies `{ sessions, bodyWeight, routines, prHistory }`
+- **Copy JSON** — copies `{ sessions, bodyWeight, routines, dailyLogs, prHistory }`
   to the clipboard, meant to be pasted directly into a chat with Claude
   (or any LLM) for custom graphs/analysis. `prHistory` is always all-time.
 - **Download PR history CSV** — one row per PR milestone: `date, exercise,
   muscle_group, weight, reps, rir, e1rm, record` where `record` is
   `weight`, `e1rm`, or `weight + e1rm`. All-time.
+- **Daily log + training** — one record per day in the date range, merging
+  that day's workout (exercises, sets, volume, notes) with its meals and
+  macros, water, supplements, sleep, day rating and body weight. **Copy
+  daily log JSON** includes a short legend of field meanings so it can be
+  pasted cold into a chat with Claude for feedback; **Download daily log
+  CSV** is the same data, one flat row per day.
 - **Download backup (JSON)** — a full `{ app, version, exported_at,
-  sessions, bodyWeight, routines }` file covering your entire history
+  sessions, bodyWeight, routines, dailyLogs }` file covering your entire history
   regardless of the date-range filter. This is the file to keep as a real
   backup. (No `prHistory` here — it's fully derived from `sessions`.)
 
@@ -122,6 +128,9 @@ and idempotent**:
 - a body-weight entry is added only for a date that has none yet
 - a routine is added only if no routine with that name exists yet — an
   existing routine of the same name is left exactly as it is
+- a daily log is added only for a date that has none yet — an existing
+  day's log is never overwritten
+- a saved meal is added only if no saved meal has that name yet
 
 Nothing is ever edited in place or deleted, so re-importing the same file
 is a no-op and a half-finished import can simply be run again.
@@ -162,6 +171,21 @@ is a no-op and a half-finished import can simply be run again.
   muscle group per week, with the same date-range filtering.
 - **Body Wt** — log body weight by date with a trend chart, kept separate
   from lifting data.
+- **Daily** — a paper-journal-style page for each day: six meal slots
+  (Breakfast, Snack, Lunch, Snack, Dinner, Snack) each with a description,
+  time and calories/protein/carbs/fat, with running daily totals; a water
+  tracker in 16.9 fl oz bottles; supplements (name + amount, with autosuggest
+  and a "Same as yesterday" shortcut); sleep (lights out, wake up, quality
+  1–10, hours computed across midnight — the night that ended that
+  morning); a **steps** total for the day; and a "rate your day" 10–100%
+  score. To cut down typing: **auto-suggest** on every meal description
+  (tap the box to see your saved and recent meals; one tap fills the name
+  and all four macros), **★ Save** to keep a meal in **My meals**,
+  **×0.5 / ×1 / ×1.5 / ×2 portion chips** that scale a meal's macros, and
+  **Copy meals from** any other day (fills only empty slots, never
+  overwrites). That day's workout is
+  shown read-only at the top. Everything autosaves; use the arrows or date
+  picker to log or fix other days.
 - **Export / Import** — CSV and JSON export, a full downloadable backup
   file, and additive JSON import. See above.
 
@@ -174,7 +198,7 @@ every set on every view.
 
 ## Schema versions
 
-`DB_VERSION` in `js/db.js` is currently **3**. The `onupgradeneeded`
+`DB_VERSION` in `js/db.js` is currently **5**. The `onupgradeneeded`
 handler only ever *creates* stores it doesn't already find, so bumping the
 version on an existing database adds the new store(s) and leaves every
 existing store and its rows untouched:
@@ -184,3 +208,8 @@ existing store and its rows untouched:
 - **v3** — adds `meta` (currently just remembers the highest weight-moved
   milestone already celebrated, so the Volume tab doesn't re-fire the
   celebration banner on every visit)
+- **v4** — adds `dailyLogs` (one record per date, keyed by `YYYY-MM-DD`:
+  meals, water, supplements, sleep, day rating). Never joined to or
+  written into `sessions`/`sets`.
+- **v5** — adds `savedMeals` (the "My meals" quick-fill library, keyed by
+  lowercased meal name).

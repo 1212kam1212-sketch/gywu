@@ -10,6 +10,10 @@
 //                 exercise_ids [int], created_at }  -- planning only, never training data
 //   meta        { key (unique), value }  -- small app-state key/value pairs
 //                 (currently just the highest weight-moved milestone already celebrated)
+//   dailyLogs   { date (key, YYYY-MM-DD), meals [], water, supplements [], sleep {},
+//                 day_rating, updated_at }  -- one nutrition/sleep/water journal page per day
+//   savedMeals  { key (lowercased name), name, calories, protein, carbs, fat, last_used }
+//                 -- the "My Meals" quick-fill library for the Daily tab
 //
 // `date` is denormalized onto each set from its parent session at insert
 // time (SQLite could join sessions->sets to filter by date; IndexedDB
@@ -20,11 +24,11 @@
 import { estimate1RM, roundE1RM, detectPR } from './lib.js';
 
 const DB_NAME = 'gywu';
-// v2 added `routines`. v3 adds `meta`. The upgrade handler below only ever
+// v2 added `routines`. v3 added `meta`. v4 added `dailyLogs`. v5 adds `savedMeals`. The upgrade handler below only ever
 // *creates* stores it doesn't find, so bumping the version on an existing
 // database just adds whatever's missing and leaves every existing store and
 // its data alone.
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 
 export const ROUTINE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // JS Date.getDay() is 0=Sun..6=Sat; map it onto ROUTINE_DAYS labels.
@@ -111,10 +115,35 @@ export function openDB() {
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta', { keyPath: 'key' });
       }
+
+      // v4
+      if (!db.objectStoreNames.contains('dailyLogs')) {
+        db.createObjectStore('dailyLogs', { keyPath: 'date' });
+      }
+
+      // v5
+      if (!db.objectStoreNames.contains('savedMeals')) {
+        db.createObjectStore('savedMeals', { keyPath: 'key' });
+      }
+    };
+
+    // Another window is still holding an older version of the database open,
+    // so this upgrade can't proceed until that window lets go. Tell the UI
+    // instead of hanging silently.
+    req.onblocked = () => {
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('forged-db-blocked'));
     };
 
     req.onsuccess = async () => {
       const db = req.result;
+      // A newer version of the app (in another window/tab) wants to upgrade
+      // the database: step aside right away so it isn't blocked, and ask this
+      // window to reload onto the new version.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('forged-db-stale'));
+      };
       await seedExercisesIfEmpty(db);
       resolve(db);
     };
@@ -754,6 +783,112 @@ export async function setMeta(key, value) {
   await tx2promise(tx);
 }
 
+// ---------- daily log (nutrition / water / supplements / sleep / rating) ----------
+
+export async function getDailyLog(date) {
+  const db = await openDB();
+  const tx = db.transaction('dailyLogs', 'readonly');
+  return (await req2promise(tx.objectStore('dailyLogs').get(date))) || null;
+}
+
+// Replace the day's log. Callers pass a normalized log (lib.normalizeDailyLog);
+// passing null/empty stores nothing and leaves any existing row untouched -
+// the app never deletes a day's journal, it only overwrites it with the
+// user's own edits.
+export async function saveDailyLog(date, log) {
+  if (!log) return null;
+  const db = await openDB();
+  const tx = db.transaction('dailyLogs', 'readwrite');
+  const row = { ...log, date, updated_at: new Date().toISOString() };
+  await req2promise(tx.objectStore('dailyLogs').put(row));
+  await tx2promise(tx);
+  return row;
+}
+
+export async function listDailyLogs({ startDate, endDate } = {}) {
+  const db = await openDB();
+  const tx = db.transaction('dailyLogs', 'readonly');
+  let range;
+  if (startDate && endDate) range = IDBKeyRange.bound(startDate, endDate);
+  else if (startDate) range = IDBKeyRange.lowerBound(startDate);
+  else if (endDate) range = IDBKeyRange.upperBound(endDate);
+  const rows = await req2promise(tx.objectStore('dailyLogs').getAll(range));
+  rows.sort((a, b) => a.date.localeCompare(b.date));
+  return rows;
+}
+
+// Read-only summary of the training logged on a date, for display next to the
+// day's journal: { exercises: [{name, muscle_group, sets}], totalSets, volume, notes }.
+export async function getTrainingSummary(date) {
+  const db = await openDB();
+  const tx = db.transaction('sessions', 'readonly');
+  const session = await req2promise(tx.objectStore('sessions').index('by_date').get(date));
+  if (!session) return null;
+  const detail = await getSessionDetail(session.id);
+  if (!detail) return null;
+  let totalSets = 0, volume = 0;
+  const exercises = detail.exercises.map((ex) => {
+    for (const st of ex.sets) { totalSets++; volume += st.weight * st.reps; }
+    return { name: ex.exercise_name, muscle_group: ex.muscle_group, sets: ex.sets.length };
+  });
+  return { exercises, totalSets, volume: Math.round(volume), notes: session.notes || '' };
+}
+
+// ---------- saved meals ("My Meals") ----------
+
+export async function listSavedMeals() {
+  const db = await openDB();
+  const tx = db.transaction('savedMeals', 'readonly');
+  const rows = await req2promise(tx.objectStore('savedMeals').getAll());
+  rows.sort((a, b) => (b.last_used || '').localeCompare(a.last_used || '') || a.name.localeCompare(b.name));
+  return rows;
+}
+
+// Add or update a saved meal (matched by lowercased name). Callers pass a
+// normalized meal (lib.normalizeSavedMeal).
+export async function saveMeal(meal) {
+  if (!meal || !meal.key) return null;
+  const db = await openDB();
+  const tx = db.transaction('savedMeals', 'readwrite');
+  const row = { ...meal, last_used: new Date().toISOString() };
+  await req2promise(tx.objectStore('savedMeals').put(row));
+  await tx2promise(tx);
+  return row;
+}
+
+// Bump a saved meal to the top of the list when it's used.
+export async function touchSavedMeal(key) {
+  const db = await openDB();
+  const tx = db.transaction('savedMeals', 'readwrite');
+  const store = tx.objectStore('savedMeals');
+  const row = await req2promise(store.get(key));
+  if (row) {
+    row.last_used = new Date().toISOString();
+    await req2promise(store.put(row));
+  }
+  await tx2promise(tx);
+}
+
+export async function deleteSavedMeal(key) {
+  const db = await openDB();
+  const tx = db.transaction('savedMeals', 'readwrite');
+  await req2promise(tx.objectStore('savedMeals').delete(key));
+  await tx2promise(tx);
+}
+
+// Names of every supplement ever logged, most recent first (for autosuggest).
+export async function listSupplementNames() {
+  const rows = (await listDailyLogs()).reverse();
+  const seen = new Map();
+  for (const r of rows) {
+    for (const s of r.supplements || []) {
+      const k = s.name.toLowerCase();
+      if (s.name && !seen.has(k)) seen.set(k, s.name);
+    }
+  }
+  return [...seen.values()];
+}
+
 // ---------- weekly volume ----------
 
 // Defaults to a bounded window (weeksBack) so a full year of history
@@ -838,9 +973,11 @@ export async function deleteBodyWeight(id) {
 //   - a body-weight entry is added only for a date that has none yet
 //   - a routine is added only if no routine with that name exists yet; an
 //     existing routine of the same name is left exactly as it is
+//   - a daily log is added only for a date that has none yet
+//   - a saved meal is added only if no saved meal has that name yet
 // Nothing is ever updated-in-place or deleted, so re-importing the same file
 // is a no-op and a half-finished import can just be run again.
-export async function importData({ sessions = [], bodyWeight = [], routines = [] } = {}) {
+export async function importData({ sessions = [], bodyWeight = [], routines = [], dailyLogs = [], savedMeals = [] } = {}) {
   const db = await openDB();
   const report = {
     sessionsCreated: 0, sessionsMatched: 0,
@@ -849,6 +986,8 @@ export async function importData({ sessions = [], bodyWeight = [], routines = []
     notesFilled: 0, notesSkipped: 0,
     bodyWeightAdded: 0, bodyWeightSkipped: 0,
     routinesAdded: 0, routinesSkipped: 0,
+    dailyLogsAdded: 0, dailyLogsSkipped: 0,
+    savedMealsAdded: 0, savedMealsSkipped: 0,
   };
 
   // lowercased name -> exercise id, primed once and kept current as we create.
@@ -979,6 +1118,34 @@ export async function importData({ sessions = [], bodyWeight = [], routines = []
       existingNames.add(name.toLowerCase());
       report.routinesAdded++;
     }
+  }
+
+  // --- daily logs (a date that already has a log is left exactly as it is) ---
+  for (const log of dailyLogs) {
+    const tx = db.transaction('dailyLogs', 'readwrite');
+    const store = tx.objectStore('dailyLogs');
+    const existing = await req2promise(store.get(log.date));
+    if (existing) {
+      report.dailyLogsSkipped++;
+    } else {
+      store.add({ ...log, updated_at: new Date().toISOString() });
+      report.dailyLogsAdded++;
+    }
+    await tx2promise(tx);
+  }
+
+  // --- saved meals (a name that's already saved is left exactly as it is) ---
+  for (const meal of savedMeals) {
+    const tx = db.transaction('savedMeals', 'readwrite');
+    const store = tx.objectStore('savedMeals');
+    const existing = await req2promise(store.get(meal.key));
+    if (existing) {
+      report.savedMealsSkipped++;
+    } else {
+      store.add({ ...meal });
+      report.savedMealsAdded++;
+    }
+    await tx2promise(tx);
   }
 
   return report;
