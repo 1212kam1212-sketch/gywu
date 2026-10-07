@@ -174,7 +174,7 @@ is a no-op and a half-finished import can simply be run again.
 - **Daily** — a paper-journal-style page for each day: six meal slots
   (Breakfast, Snack, Lunch, Snack, Dinner, Snack) each with a description,
   time and calories/protein/carbs/fat, with running daily totals; a water
-  tracker in 8-oz servings; supplements (name + amount, with autosuggest
+  tracker in 16.9 fl oz bottles; supplements (name + amount, with autosuggest
   and a "Same as yesterday" shortcut); sleep (lights out, wake up, quality
   1–10, hours computed across midnight — the night that ended that
   morning); a **steps** total for the day; and a "rate your day" 10–100%

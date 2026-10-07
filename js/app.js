@@ -3,7 +3,7 @@
 import {
   toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV,
   toRoutinesExport, pickActiveRoutine, highestMilestone, nextMilestone,
-  MEAL_SLOTS, WATER_SERVING_OZ, normalizeDailyLog, sumMeals, sleepHours,
+  MEAL_SLOTS, waterOz, normalizeDailyLog, sumMeals, sleepHours,
   buildDailyAnalysis, toDailyAnalysisJSON, toDailyCSV, toDailyLogsExport,
   normalizeSavedMeal, toSavedMealsExport, buildMealSuggestions, filterMealSuggestions,
   scaleMacros, copyMealsInto,
@@ -1484,7 +1484,7 @@ function renderBodyWeightTable(rows) {
 // All user-typed text is written into inputs via .value / elements via
 // .textContent - never interpolated into innerHTML.
 
-const WATER_DOTS = 16;
+const WATER_DOTS = 10; // 10 bottles x 16.9 fl oz
 
 const daily = {
   date: todayStr(),
@@ -1799,7 +1799,7 @@ function paintWater() {
     b.classList.toggle('on', i < daily.water);
   });
   document.getElementById('daily-water-label').textContent =
-    daily.water ? `${daily.water * WATER_SERVING_OZ} oz · ${daily.water} serving${daily.water === 1 ? '' : 's'}` : 'None logged yet';
+    daily.water ? `${waterOz(daily.water)} fl oz · ${daily.water} bottle${daily.water === 1 ? '' : 's'}` : 'None logged yet';
 }
 
 function renderDailyWater() {
@@ -1809,7 +1809,7 @@ function renderDailyWater() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'water-dot';
-    b.setAttribute('aria-label', `${(i + 1) * WATER_SERVING_OZ} oz`);
+    b.setAttribute('aria-label', `${waterOz(i + 1)} fl oz`);
     b.addEventListener('click', () => {
       // Tapping the last filled circle steps back one, so a mis-tap is undoable.
       daily.water = daily.water === i + 1 ? i : i + 1;

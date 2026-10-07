@@ -1052,7 +1052,7 @@ button.danger-armed {
 .daily-totals .tot-val { font-family: var(--mono); font-size: 1.05rem; font-weight: 700; color: var(--lime); }
 .daily-totals .tot-lbl { font-size: 0.6rem; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
 
-.water-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+.water-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .water-dot {
   aspect-ratio: 1;
   border-radius: 50%;

@@ -439,11 +439,16 @@ export function parseImportJSON(text) {
 //   { date, meals: [{ slot, name, time, calories, protein, carbs, fat }],
 //     water, supplements: [{ name, amount }],
 //     sleep: { lights_out, wake_up, quality }, day_rating }
-// `water` counts 8-oz servings. `sleep` is the night that ended on the
+// `water` counts 16.9 fl oz bottles. `sleep` is the night that ended on the
 // morning of `date`. `day_rating` is "on track with goals" in 10% steps.
 
 export const MEAL_SLOTS = ['Breakfast', 'Snack', 'Lunch', 'Snack', 'Dinner', 'Snack'];
-export const WATER_SERVING_OZ = 8;
+export const WATER_SERVING_OZ = 16.9; // one standard 500 mL bottle
+
+// Fluid ounces for a count of bottles, rounded to 1 decimal (9 -> 152.1).
+export function waterOz(servings) {
+  return Math.round((Number(servings) || 0) * WATER_SERVING_OZ * 10) / 10;
+}
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DAILY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -595,7 +600,7 @@ export function buildDailyAnalysis(sessions, dailyLogs, bodyWeight) {
     if (log) {
       const sl = log.sleep || {};
       out.nutrition = { meals: log.meals || [], totals: sumMeals(log.meals) };
-      out.water_oz = (log.water || 0) * WATER_SERVING_OZ;
+      out.water_oz = waterOz(log.water);
       out.steps = log.steps ?? null;
       out.supplements = log.supplements || [];
       out.sleep = {
@@ -627,7 +632,7 @@ export function toDailyAnalysisJSON(days, exportedAtISO) {
     legend: {
       training: 'Lifting done that date. volume = sum of weight x reps over all sets (lb). rir = reps in reserve.',
       nutrition: 'meals as logged (calories in kcal, protein/carbs/fat in grams); totals = sum of the logged meals. Days with nothing logged have nutrition: null.',
-      water_oz: 'Water in ounces (logged as 8-oz servings).',
+      water_oz: 'Water in fluid ounces (logged as 16.9 fl oz / 500 mL bottles).',
       steps: 'Total steps walked that day, as entered by hand (null if not logged).',
       sleep: 'The night that ended on the morning of this date. hours is computed from lights_out to wake_up.',
       day_rating_pct: 'Self-rated "on track with goals" for the day, 10-100.',

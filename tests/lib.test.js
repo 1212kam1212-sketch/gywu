@@ -25,6 +25,7 @@ import {
   toDailyAnalysisJSON,
   toDailyCSV,
   toDailyLogsExport,
+  waterOz,
   normalizeSavedMeal,
   toSavedMealsExport,
   buildMealSuggestions,
@@ -597,12 +598,12 @@ test('buildDailyAnalysis: merges training, daily log and body weight per date', 
   assert.deepEqual(d.training.muscle_groups, ['Chest', 'Core']);
   assert.equal(d.body_weight, 181.4);
   assert.equal(d.nutrition.totals.calories, 1220);
-  assert.equal(d.water_oz, 72);
+  assert.equal(d.water_oz, 152.1); // 9 bottles x 16.9 fl oz
   assert.equal(d.sleep.hours, 7.25);
   assert.equal(d.day_rating_pct, 80);
   // a day with a log but no workout
   assert.equal(days[1].training.trained, false);
-  assert.equal(days[1].water_oz, 32);
+  assert.equal(days[1].water_oz, 67.6); // 4 bottles
 });
 
 test('buildDailyAnalysis: a training day with no log still appears, nutrition null', () => {
@@ -627,7 +628,7 @@ test('toDailyCSV: header + one flattened row per day, with escaping', () => {
   const lines = toDailyCSV(days).trim().split('\n');
   assert.equal(lines.length, 2);
   assert.ok(lines[0].startsWith('date,weekday,trained,'));
-  assert.ok(lines[1].startsWith('2026-10-06,Tue,yes,3,30,2000,Chest/Core,1220,97,140,23,2,72,Creatine 5g,23:30,06:45,7.25,7,80,,'));
+  assert.ok(lines[1].startsWith('2026-10-06,Tue,yes,3,30,2000,Chest/Core,1220,97,140,23,2,152.1,Creatine 5g,23:30,06:45,7.25,7,80,,'));
   assert.ok(lines[1].endsWith('"good, ""heavy"" day"'));
 });
 
@@ -652,6 +653,14 @@ test('parseImportJSON: a malformed daily log is dropped, not fatal', () => {
 test('buildDailyAnalysis: a cleared (empty) stored log does not create a day', () => {
   const empty = { date: '2026-10-05', meals: [], water: 0, supplements: [], sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null };
   assert.equal(buildDailyAnalysis([], [empty], []).length, 0);
+});
+
+test('waterOz: bottles -> fl oz at 16.9 each, rounded to 1 decimal', () => {
+  assert.equal(waterOz(0), 0);
+  assert.equal(waterOz(1), 16.9);
+  assert.equal(waterOz(3), 50.7);
+  assert.equal(waterOz(10), 169);
+  assert.equal(waterOz(undefined), 0);
 });
 
 // ---------- steps ----------
