@@ -290,7 +290,7 @@ export function toRoutinesExport(routines) {
 // toJSONExport stays a bare array (that output also gets pasted straight
 // into chats), so the file that must round-trip *everything* gets its own
 // shape here. `routines` is optional and last so older callers are unaffected.
-export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines) {
+export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines, dailyLogs) {
   return {
     app: 'FORGED',
     version: 1,
@@ -298,7 +298,16 @@ export function toBackupJSON(sessions, bodyWeight, exportedAtISO, routines) {
     sessions: toJSONExport(sessions),
     bodyWeight: (bodyWeight || []).map((b) => ({ date: b.date, weight: b.weight })),
     routines: toRoutinesExport(routines),
+    dailyLogs: toDailyLogsExport(dailyLogs),
   };
+}
+
+// Daily logs as stored, minus anything empty, oldest first.
+export function toDailyLogsExport(dailyLogs) {
+  return (dailyLogs || [])
+    .map((l) => normalizeDailyLog(l, l && l.date))
+    .filter(Boolean)
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 const IMPORT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -322,15 +331,17 @@ export function parseImportJSON(text) {
     importFail('that is not valid JSON.');
   }
 
-  let sessionsIn, bodyWeightIn, routinesIn;
+  let sessionsIn, bodyWeightIn, routinesIn, dailyLogsIn;
   if (Array.isArray(raw)) {
     sessionsIn = raw;
     bodyWeightIn = [];
     routinesIn = [];
+    dailyLogsIn = [];
   } else if (raw && typeof raw === 'object' && Array.isArray(raw.sessions)) {
     sessionsIn = raw.sessions;
     bodyWeightIn = Array.isArray(raw.bodyWeight) ? raw.bodyWeight : [];
     routinesIn = Array.isArray(raw.routines) ? raw.routines : [];
+    dailyLogsIn = Array.isArray(raw.dailyLogs) ? raw.dailyLogs : [];
   } else {
     importFail('expected a JSON array of sessions, or an object with a "sessions" array.');
   }
@@ -391,6 +402,12 @@ export function parseImportJSON(text) {
     return { name, day, time, exercises };
   });
 
+  // Daily logs are sanitized rather than rejected: a malformed row is dropped
+  // (normalizeDailyLog returns null) instead of failing the whole import.
+  const dailyLogs = dailyLogsIn
+    .map((l) => normalizeDailyLog(l, l && l.date))
+    .filter(Boolean);
+
   const setCount = sessions.reduce(
     (n, s) => n + s.exercises.reduce((m, e) => m + e.sets.length, 0),
     0
@@ -399,11 +416,250 @@ export function parseImportJSON(text) {
     sessions,
     bodyWeight,
     routines,
+    dailyLogs,
     summary: {
       sessions: sessions.length,
       sets: setCount,
       bodyWeight: bodyWeight.length,
       routines: routines.length,
+      dailyLogs: dailyLogs.length,
     },
   };
+}
+
+// ---------- daily log (nutrition / water / supplements / sleep / day rating) ----------
+//
+// One record per date, modeled on a paper training-journal page:
+//   { date, meals: [{ slot, name, time, calories, protein, carbs, fat }],
+//     water, supplements: [{ name, amount }],
+//     sleep: { lights_out, wake_up, quality }, day_rating }
+// `water` counts 8-oz servings. `sleep` is the night that ended on the
+// morning of `date`. `day_rating` is "on track with goals" in 10% steps.
+
+export const MEAL_SLOTS = ['Breakfast', 'Snack', 'Lunch', 'Snack', 'Dinner', 'Snack'];
+export const WATER_SERVING_OZ = 8;
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DAILY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function cleanText(v, max) {
+  return String(v ?? '').trim().slice(0, max);
+}
+
+// Blank / non-numeric / negative -> null; otherwise a number rounded to 1 dp.
+function cleanNum(v, max = 100000) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > max) return null;
+  return Math.round(n * 10) / 10;
+}
+
+function cleanTime(v) {
+  const s = String(v ?? '').trim();
+  return TIME_RE.test(s) ? s : '';
+}
+
+// Coerce anything (UI state, imported JSON) into a clean daily-log shape, or
+// null if there is nothing worth keeping. Never throws.
+export function normalizeDailyLog(raw, date) {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = date || raw.date;
+  if (!DAILY_DATE_RE.test(String(d))) return null;
+
+  const meals = (Array.isArray(raw.meals) ? raw.meals : [])
+    .slice(0, 20)
+    .map((m) => ({
+      slot: cleanText(m && m.slot, 40) || 'Meal',
+      name: cleanText(m && m.name, 300),
+      time: cleanTime(m && m.time),
+      calories: cleanNum(m && m.calories, 20000),
+      protein: cleanNum(m && m.protein, 2000),
+      carbs: cleanNum(m && m.carbs, 5000),
+      fat: cleanNum(m && m.fat, 2000),
+    }))
+    .filter((m) => m.name || m.time || m.calories !== null || m.protein !== null || m.carbs !== null || m.fat !== null);
+
+  const supplements = (Array.isArray(raw.supplements) ? raw.supplements : [])
+    .slice(0, 40)
+    .map((s) => ({ name: cleanText(s && s.name, 80), amount: cleanText(s && s.amount, 60) }))
+    .filter((s) => s.name || s.amount);
+
+  const sl = raw.sleep && typeof raw.sleep === 'object' ? raw.sleep : {};
+  let quality = cleanNum(sl.quality, 10);
+  if (quality !== null) quality = Math.round(quality);
+  if (quality !== null && quality < 1) quality = null;
+  const sleep = { lights_out: cleanTime(sl.lights_out), wake_up: cleanTime(sl.wake_up), quality };
+
+  let water = cleanNum(raw.water, 100);
+  water = water === null ? 0 : Math.round(water);
+
+  let day_rating = cleanNum(raw.day_rating, 100);
+  if (day_rating !== null) day_rating = Math.round(day_rating / 10) * 10;
+  if (day_rating !== null && day_rating < 10) day_rating = null;
+
+  const log = { date: d, meals, water, supplements, sleep, day_rating };
+  return isDailyLogEmpty(log) ? null : log;
+}
+
+export function isDailyLogEmpty(log) {
+  if (!log) return true;
+  const sleep = log.sleep || {};
+  return (
+    !(log.meals && log.meals.length) &&
+    !(log.supplements && log.supplements.length) &&
+    !log.water &&
+    !sleep.lights_out && !sleep.wake_up && sleep.quality == null &&
+    log.day_rating == null
+  );
+}
+
+// Sum calories / protein / carbs / fat across meals, ignoring blanks.
+export function sumMeals(meals) {
+  const t = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  for (const m of meals || []) {
+    for (const k of Object.keys(t)) {
+      if (typeof m[k] === 'number' && Number.isFinite(m[k])) t[k] += m[k];
+    }
+  }
+  for (const k of Object.keys(t)) t[k] = Math.round(t[k] * 10) / 10;
+  return t;
+}
+
+// Hours slept between lights-out and wake-up ("HH:MM" strings), crossing
+// midnight when wake-up is earlier than lights-out. null if either is missing
+// or they are identical (ambiguous: 0h or 24h).
+export function sleepHours(lightsOut, wakeUp) {
+  if (!TIME_RE.test(lightsOut || '') || !TIME_RE.test(wakeUp || '')) return null;
+  const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+  let diff = toMin(wakeUp) - toMin(lightsOut);
+  if (diff === 0) return null;
+  if (diff < 0) diff += 24 * 60;
+  return Math.round((diff / 60) * 100) / 100;
+}
+
+// Combine training sessions, daily logs and body weight into one record per
+// date (every date that has a training session OR a daily log), oldest first.
+//   sessions: getSessionsForExport() shape
+//   dailyLogs: stored daily-log rows
+//   bodyWeight: [{date, weight}]
+export function buildDailyAnalysis(sessions, dailyLogs, bodyWeight) {
+  const byDate = new Map();
+  const slot = (date) => {
+    if (!byDate.has(date)) byDate.set(date, { date });
+    return byDate.get(date);
+  };
+  for (const s of sessions || []) slot(s.date).session = s;
+  for (const l of dailyLogs || []) if (!isDailyLogEmpty(l)) slot(l.date).log = l;
+  const bwByDate = new Map((bodyWeight || []).map((b) => [b.date, b.weight]));
+
+  const days = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return days.map(({ date, session, log }) => {
+    const [y, m, d] = date.split('-').map(Number);
+    const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(y, m - 1, d).getDay()];
+
+    let training = { trained: false, total_sets: 0, total_reps: 0, volume: 0, muscle_groups: [], exercises: [], notes: '' };
+    if (session) {
+      const groups = new Set();
+      let sets = 0, reps = 0, volume = 0;
+      const exercises = (session.exercises || []).map((ex) => {
+        groups.add(ex.muscle_group);
+        for (const st of ex.sets) { sets++; reps += st.reps; volume += st.weight * st.reps; }
+        return {
+          name: ex.exercise_name,
+          muscle_group: ex.muscle_group,
+          sets: ex.sets.map((st) => ({ weight: st.weight, reps: st.reps, rir: st.rir ?? null })),
+        };
+      });
+      training = {
+        trained: sets > 0,
+        total_sets: sets,
+        total_reps: reps,
+        volume: Math.round(volume * 10) / 10,
+        muscle_groups: [...groups].sort(),
+        exercises,
+        notes: session.notes || '',
+      };
+    }
+
+    const out = { date, weekday, training, body_weight: bwByDate.has(date) ? bwByDate.get(date) : null };
+    if (log) {
+      const sl = log.sleep || {};
+      out.nutrition = { meals: log.meals || [], totals: sumMeals(log.meals) };
+      out.water_oz = (log.water || 0) * WATER_SERVING_OZ;
+      out.supplements = log.supplements || [];
+      out.sleep = {
+        lights_out: sl.lights_out || null,
+        wake_up: sl.wake_up || null,
+        hours: sleepHours(sl.lights_out, sl.wake_up),
+        quality_1_to_10: sl.quality ?? null,
+      };
+      out.day_rating_pct = log.day_rating ?? null;
+    } else {
+      out.nutrition = null;
+      out.water_oz = null;
+      out.supplements = [];
+      out.sleep = null;
+      out.day_rating_pct = null;
+    }
+    return out;
+  });
+}
+
+// Wrap the per-day records with a short legend so a chat model can read the
+// file cold, without needing to be told what the fields mean.
+export function toDailyAnalysisJSON(days, exportedAtISO) {
+  return {
+    app: 'FORGED',
+    kind: 'daily-log-with-training',
+    exported_at: exportedAtISO || new Date().toISOString(),
+    legend: {
+      training: 'Lifting done that date. volume = sum of weight x reps over all sets (lb). rir = reps in reserve.',
+      nutrition: 'meals as logged (calories in kcal, protein/carbs/fat in grams); totals = sum of the logged meals. Days with nothing logged have nutrition: null.',
+      water_oz: 'Water in ounces (logged as 8-oz servings).',
+      sleep: 'The night that ended on the morning of this date. hours is computed from lights_out to wake_up.',
+      day_rating_pct: 'Self-rated "on track with goals" for the day, 10-100.',
+      body_weight: 'Body weight logged that date, if any.',
+    },
+    days,
+  };
+}
+
+// One row per day, spreadsheet-ready.
+export function toDailyCSV(days) {
+  const header = [
+    'date', 'weekday', 'trained', 'sets', 'reps', 'volume', 'muscle_groups',
+    'calories', 'protein_g', 'carbs_g', 'fat_g', 'meals_logged', 'water_oz',
+    'supplements', 'lights_out', 'wake_up', 'sleep_hours', 'sleep_quality',
+    'day_rating_pct', 'body_weight', 'session_notes',
+  ];
+  const lines = [header.join(',')];
+  for (const d of days) {
+    const n = d.nutrition;
+    const sl = d.sleep || {};
+    const row = [
+      d.date,
+      d.weekday,
+      d.training.trained ? 'yes' : 'no',
+      d.training.total_sets,
+      d.training.total_reps,
+      d.training.volume,
+      d.training.muscle_groups.join('/'),
+      n ? n.totals.calories : '',
+      n ? n.totals.protein : '',
+      n ? n.totals.carbs : '',
+      n ? n.totals.fat : '',
+      n ? n.meals.length : '',
+      d.water_oz ?? '',
+      (d.supplements || []).map((s) => (s.amount ? `${s.name} ${s.amount}` : s.name)).join('; '),
+      sl.lights_out ?? '',
+      sl.wake_up ?? '',
+      sl.hours ?? '',
+      sl.quality_1_to_10 ?? '',
+      d.day_rating_pct ?? '',
+      d.body_weight ?? '',
+      d.training.notes,
+    ];
+    lines.push(row.map(csvEscape).join(','));
+  }
+  return lines.join('\n') + '\n';
 }

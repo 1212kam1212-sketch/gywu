@@ -17,6 +17,14 @@ import {
   toRoutinesExport,
   highestMilestone,
   nextMilestone,
+  normalizeDailyLog,
+  isDailyLogEmpty,
+  sumMeals,
+  sleepHours,
+  buildDailyAnalysis,
+  toDailyAnalysisJSON,
+  toDailyCSV,
+  toDailyLogsExport,
 } from '../js/lib.js';
 
 // ---------- estimate1RM ----------
@@ -297,7 +305,7 @@ test('parseImportJSON: accepts the bare toJSONExport array', () => {
   assert.equal(out.sessions.length, 1);
   assert.equal(out.sessions[0].exercises[0].name, 'Bench Press');
   assert.equal(out.sessions[0].exercises[0].sets[0].weight, 100);
-  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0, routines: 0 });
+  assert.deepEqual(out.summary, { sessions: 1, sets: 1, bodyWeight: 0, routines: 0, dailyLogs: 0 });
 });
 
 test('parseImportJSON: accepts a { sessions, bodyWeight } backup object', () => {
@@ -495,4 +503,147 @@ test('nextMilestone: the next threshold still ahead', () => {
 test('nextMilestone: keeps stepping by 500,000 past the last named threshold', () => {
   assert.equal(nextMilestone(2000000), 2500000);
   assert.equal(nextMilestone(2600000), 3000000);
+});
+
+// ---------- daily log ----------
+
+const sampleLog = () => ({
+  meals: [
+    { slot: 'Breakfast', name: 'Oats + whey', time: '07:30', calories: 520, protein: 42, carbs: 60, fat: 9 },
+    { slot: 'Snack', name: '', time: '', calories: null, protein: null, carbs: null, fat: null },
+    { slot: 'Lunch', name: 'Chicken rice', time: '12:15', calories: 700, protein: 55, carbs: 80, fat: 14 },
+  ],
+  water: 9,
+  supplements: [{ name: 'Creatine', amount: '5g' }, { name: '', amount: '' }],
+  sleep: { lights_out: '23:30', wake_up: '06:45', quality: 7 },
+  day_rating: 80,
+});
+
+test('normalizeDailyLog: drops empty meals/supplements, keeps the rest', () => {
+  const n = normalizeDailyLog(sampleLog(), '2026-10-06');
+  assert.equal(n.date, '2026-10-06');
+  assert.equal(n.meals.length, 2);
+  assert.equal(n.supplements.length, 1);
+  assert.equal(n.water, 9);
+  assert.equal(n.day_rating, 80);
+});
+
+test('normalizeDailyLog: an all-blank day, or a bad date, is null', () => {
+  assert.equal(normalizeDailyLog({ meals: [], water: 0, sleep: {} }, '2026-10-06'), null);
+  assert.equal(normalizeDailyLog(sampleLog(), 'yesterday'), null);
+  assert.equal(normalizeDailyLog(null, '2026-10-06'), null);
+});
+
+test('normalizeDailyLog: sanitizes junk instead of throwing', () => {
+  const n = normalizeDailyLog({
+    meals: [{ name: '<img src=x onerror=alert(1)>', calories: '-50', protein: 'abc', time: '25:99' }],
+    water: -3, day_rating: 55, sleep: { quality: 99, lights_out: 'late' },
+  }, '2026-10-06');
+  assert.equal(n.meals[0].calories, null);   // negative -> blank
+  assert.equal(n.meals[0].protein, null);    // non-numeric -> blank
+  assert.equal(n.meals[0].time, '');         // invalid time -> blank
+  assert.equal(n.water, 0);
+  assert.equal(n.day_rating, 60);            // snapped to nearest 10
+  assert.equal(n.sleep.quality, null);       // out of range
+  assert.equal(n.sleep.lights_out, '');
+  assert.equal(n.meals[0].name, '<img src=x onerror=alert(1)>'); // stored as plain text, rendered via textContent/value
+});
+
+test('isDailyLogEmpty', () => {
+  assert.equal(isDailyLogEmpty(null), true);
+  assert.equal(isDailyLogEmpty({ meals: [], supplements: [], water: 0, sleep: {}, day_rating: null }), true);
+  assert.equal(isDailyLogEmpty({ meals: [], supplements: [], water: 1, sleep: {}, day_rating: null }), false);
+});
+
+test('sumMeals: totals ignore blanks', () => {
+  assert.deepEqual(sumMeals(normalizeDailyLog(sampleLog(), '2026-10-06').meals),
+    { calories: 1220, protein: 97, carbs: 140, fat: 23 });
+  assert.deepEqual(sumMeals([]), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+});
+
+test('sleepHours: crosses midnight, same-day, and missing', () => {
+  assert.equal(sleepHours('23:30', '06:45'), 7.25);
+  assert.equal(sleepHours('01:00', '08:30'), 7.5);
+  assert.equal(sleepHours('', '06:45'), null);
+  assert.equal(sleepHours('22:00', '22:00'), null);
+});
+
+const sampleSession = {
+  date: '2026-10-06', notes: 'felt strong',
+  exercises: [
+    { exercise_name: 'Bench Press', muscle_group: 'Chest', sets: [{ weight: 200, reps: 5, rir: 2 }, { weight: 200, reps: 5, rir: null }] },
+    { exercise_name: 'Crunch', muscle_group: 'Core', sets: [{ weight: 0, reps: 20, rir: null }] },
+  ],
+};
+
+test('buildDailyAnalysis: merges training, daily log and body weight per date', () => {
+  const days = buildDailyAnalysis(
+    [sampleSession],
+    [normalizeDailyLog(sampleLog(), '2026-10-06'), normalizeDailyLog({ water: 4 }, '2026-10-07')],
+    [{ date: '2026-10-06', weight: 181.4 }],
+  );
+  assert.equal(days.length, 2);
+  const d = days[0];
+  assert.equal(d.date, '2026-10-06');
+  assert.equal(d.weekday, 'Tue');
+  assert.equal(d.training.total_sets, 3);
+  assert.equal(d.training.volume, 2000);
+  assert.deepEqual(d.training.muscle_groups, ['Chest', 'Core']);
+  assert.equal(d.body_weight, 181.4);
+  assert.equal(d.nutrition.totals.calories, 1220);
+  assert.equal(d.water_oz, 72);
+  assert.equal(d.sleep.hours, 7.25);
+  assert.equal(d.day_rating_pct, 80);
+  // a day with a log but no workout
+  assert.equal(days[1].training.trained, false);
+  assert.equal(days[1].water_oz, 32);
+});
+
+test('buildDailyAnalysis: a training day with no log still appears, nutrition null', () => {
+  const days = buildDailyAnalysis([sampleSession], [], []);
+  assert.equal(days.length, 1);
+  assert.equal(days[0].nutrition, null);
+  assert.equal(days[0].sleep, null);
+  assert.equal(days[0].training.trained, true);
+});
+
+test('toDailyAnalysisJSON: carries a legend and the days', () => {
+  const out = toDailyAnalysisJSON([], '2026-10-07T00:00:00.000Z');
+  assert.equal(out.kind, 'daily-log-with-training');
+  assert.ok(out.legend.sleep.includes('morning'));
+  assert.deepEqual(out.days, []);
+});
+
+test('toDailyCSV: header + one flattened row per day, with escaping', () => {
+  const days = buildDailyAnalysis(
+    [{ ...sampleSession, notes: 'good, "heavy" day' }],
+    [normalizeDailyLog(sampleLog(), '2026-10-06')], []);
+  const lines = toDailyCSV(days).trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].startsWith('date,weekday,trained,'));
+  assert.ok(lines[1].startsWith('2026-10-06,Tue,yes,3,30,2000,Chest/Core,1220,97,140,23,2,72,Creatine 5g,23:30,06:45,7.25,7,80,,'));
+  assert.ok(lines[1].endsWith('"good, ""heavy"" day"'));
+});
+
+test('backup + import round-trip carries daily logs', () => {
+  const log = normalizeDailyLog(sampleLog(), '2026-10-06');
+  const backup = toBackupJSON([sampleSession], [], '2026-10-07T00:00:00.000Z', [], [log, { date: '2026-10-05' }]);
+  assert.equal(backup.dailyLogs.length, 1); // empty one dropped
+  const parsed = parseImportJSON(JSON.stringify(backup));
+  assert.equal(parsed.summary.dailyLogs, 1);
+  assert.deepEqual(parsed.dailyLogs[0], log);
+  assert.deepEqual(toDailyLogsExport([log]), [log]);
+});
+
+test('parseImportJSON: a malformed daily log is dropped, not fatal', () => {
+  const parsed = parseImportJSON(JSON.stringify({
+    sessions: [], dailyLogs: [null, { date: 'nope', water: 3 }, { date: '2026-10-06', water: 3 }],
+  }));
+  assert.equal(parsed.dailyLogs.length, 1);
+  assert.equal(parsed.dailyLogs[0].date, '2026-10-06');
+});
+
+test('buildDailyAnalysis: a cleared (empty) stored log does not create a day', () => {
+  const empty = { date: '2026-10-05', meals: [], water: 0, supplements: [], sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null };
+  assert.equal(buildDailyAnalysis([], [empty], []).length, 0);
 });

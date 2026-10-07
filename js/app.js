@@ -3,6 +3,8 @@
 import {
   toCSV, toJSONExport, toBackupJSON, parseImportJSON, toPRHistoryCSV,
   toRoutinesExport, pickActiveRoutine, highestMilestone, nextMilestone,
+  MEAL_SLOTS, WATER_SERVING_OZ, normalizeDailyLog, sumMeals, sleepHours,
+  buildDailyAnalysis, toDailyAnalysisJSON, toDailyCSV, toDailyLogsExport,
 } from './lib.js';
 import * as db from './db.js';
 
@@ -71,6 +73,7 @@ function setActivePreset(containerEl, btnEl) {
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
+    flushDaily(); // write any pending Daily-tab edits before leaving it
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     btn.classList.add('active');
@@ -85,6 +88,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     if (btn.dataset.view === 'view-prs') refreshPRs();
     if (btn.dataset.view === 'view-volume') { refreshVolume(); refreshLifetimeStats(); }
     if (btn.dataset.view === 'view-bodyweight') refreshBodyWeight();
+    if (btn.dataset.view === 'view-daily') loadDaily(daily.date);
   });
 });
 
@@ -1468,6 +1472,428 @@ function renderBodyWeightTable(rows) {
   });
 }
 
+// ---------- DAILY LOG tab ----------
+//
+// One journal page per date: meals + macros, water, supplements, sleep, and a
+// "rate your day" score, shown next to that day's workout (read-only, pulled
+// from the sessions already logged). Everything autosaves a moment after the
+// last keystroke; nothing here touches sessions/sets.
+//
+// All user-typed text is written into inputs via .value / elements via
+// .textContent - never interpolated into innerHTML.
+
+const WATER_DOTS = 16;
+
+const daily = {
+  date: todayStr(),
+  meals: [],
+  water: 0,
+  supplements: [],
+  sleep: { lights_out: '', wake_up: '', quality: null },
+  day_rating: null,
+  existed: false,   // a row for this date is already stored
+  pending: false,   // edits not yet written
+  timer: null,
+  token: 0,         // guards against out-of-order loads when paging quickly
+};
+
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function shiftDate(dateStr, delta) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return fmtDate(new Date(y, m - 1, d + delta));
+}
+
+function blankMeal(slot) {
+  return { slot, name: '', time: '', calories: '', protein: '', carbs: '', fat: '' };
+}
+
+// Lay stored meals back onto the fixed slot list (Breakfast, Snack, Lunch,
+// Snack, Dinner, Snack). Stored meals keep slot order, so match each one to the
+// next slot with the same label; anything unmatched gets an extra row.
+function dailyStateFromStored(stored) {
+  const meals = MEAL_SLOTS.map(blankMeal);
+  let from = 0;
+  for (const m of (stored && stored.meals) || []) {
+    let idx = -1;
+    for (let i = from; i < meals.length; i++) {
+      if (meals[i].slot === m.slot) { idx = i; break; }
+    }
+    if (idx === -1) { meals.push(blankMeal(m.slot)); idx = meals.length - 1; }
+    meals[idx] = {
+      slot: m.slot, name: m.name || '', time: m.time || '',
+      calories: m.calories ?? '', protein: m.protein ?? '', carbs: m.carbs ?? '', fat: m.fat ?? '',
+    };
+    from = idx + 1;
+  }
+  const sl = (stored && stored.sleep) || {};
+  return {
+    meals,
+    water: (stored && stored.water) || 0,
+    supplements: ((stored && stored.supplements) || []).map((s) => ({ name: s.name, amount: s.amount })),
+    sleep: { lights_out: sl.lights_out || '', wake_up: sl.wake_up || '', quality: sl.quality ?? null },
+    day_rating: stored && stored.day_rating != null ? stored.day_rating : null,
+  };
+}
+
+function setDailySaved(text, ok) {
+  const el = document.getElementById('daily-saved');
+  el.textContent = text;
+  el.classList.toggle('ok', !!ok);
+}
+
+function scheduleDailySave() {
+  daily.pending = true;
+  setDailySaved('Saving…');
+  clearTimeout(daily.timer);
+  daily.timer = setTimeout(persistDaily, 500);
+}
+
+async function persistDaily() {
+  clearTimeout(daily.timer);
+  daily.timer = null;
+  if (!daily.pending) return;
+  daily.pending = false;
+  const date = daily.date;
+  const normalized = normalizeDailyLog(
+    { meals: daily.meals, water: daily.water, supplements: daily.supplements, sleep: daily.sleep, day_rating: daily.day_rating },
+    date
+  );
+  try {
+    if (normalized) {
+      await db.saveDailyLog(date, normalized);
+      daily.existed = true;
+    } else if (daily.existed) {
+      // The user cleared everything: overwrite the old row with an empty one
+      // so the old values don't reappear on the next load.
+      await db.saveDailyLog(date, {
+        date, meals: [], water: 0, supplements: [],
+        sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null,
+      });
+    }
+    setDailySaved('Saved ✓', true);
+  } catch (err) {
+    setDailySaved('Could not save: ' + err.message);
+  }
+}
+
+async function flushDaily() {
+  if (daily.pending) await persistDaily();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushDaily();
+});
+window.addEventListener('pagehide', () => { flushDaily(); });
+
+function numOrNull(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function updateDailyTotals() {
+  const t = sumMeals(daily.meals.map((m) => ({
+    calories: numOrNull(m.calories), protein: numOrNull(m.protein),
+    carbs: numOrNull(m.carbs), fat: numOrNull(m.fat),
+  })));
+  const box = document.getElementById('daily-totals');
+  box.textContent = '';
+  const cells = [['Calories', t.calories], ['Protein g', t.protein], ['Carbs g', t.carbs], ['Fat g', t.fat]];
+  for (const [label, val] of cells) {
+    const cell = document.createElement('div');
+    const v = document.createElement('div');
+    v.className = 'tot-val';
+    v.textContent = String(val);
+    const l = document.createElement('div');
+    l.className = 'tot-lbl';
+    l.textContent = label;
+    cell.append(v, l);
+    box.appendChild(cell);
+  }
+}
+
+function renderDailyMeals() {
+  const host = document.getElementById('daily-meals');
+  host.textContent = '';
+  daily.meals.forEach((meal, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'meal';
+
+    const head = document.createElement('div');
+    head.className = 'meal-head';
+    const slot = document.createElement('span');
+    slot.className = 'meal-slot';
+    slot.textContent = meal.slot;
+    const time = document.createElement('input');
+    time.type = 'time';
+    time.value = meal.time;
+    time.setAttribute('aria-label', meal.slot + ' time');
+    time.addEventListener('input', () => { meal.time = time.value; scheduleDailySave(); });
+    head.append(slot, time);
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.placeholder = 'What did you eat?';
+    name.maxLength = 300;
+    name.value = meal.name;
+    name.setAttribute('aria-label', meal.slot + ' description');
+    name.addEventListener('input', () => { meal.name = name.value; scheduleDailySave(); });
+
+    const grid = document.createElement('div');
+    grid.className = 'macro-grid';
+    for (const [key, label] of [['calories', 'Cal'], ['protein', 'Protein'], ['carbs', 'Carbs'], ['fat', 'Fat']]) {
+      const cell = document.createElement('div');
+      const lab = document.createElement('label');
+      lab.textContent = label;
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.inputMode = 'decimal';
+      inp.min = '0';
+      inp.step = 'any';
+      inp.value = meal[key];
+      inp.setAttribute('aria-label', `${meal.slot} ${label}`);
+      inp.addEventListener('input', () => { meal[key] = inp.value; updateDailyTotals(); scheduleDailySave(); });
+      cell.append(lab, inp);
+      grid.appendChild(cell);
+    }
+
+    wrap.append(head, name, grid);
+    host.appendChild(wrap);
+  });
+  updateDailyTotals();
+}
+
+function paintWater() {
+  document.querySelectorAll('#daily-water .water-dot').forEach((b, i) => {
+    b.classList.toggle('on', i < daily.water);
+  });
+  document.getElementById('daily-water-label').textContent =
+    daily.water ? `${daily.water * WATER_SERVING_OZ} oz · ${daily.water} serving${daily.water === 1 ? '' : 's'}` : 'None logged yet';
+}
+
+function renderDailyWater() {
+  const host = document.getElementById('daily-water');
+  host.textContent = '';
+  for (let i = 0; i < WATER_DOTS; i++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'water-dot';
+    b.setAttribute('aria-label', `${(i + 1) * WATER_SERVING_OZ} oz`);
+    b.addEventListener('click', () => {
+      // Tapping the last filled circle steps back one, so a mis-tap is undoable.
+      daily.water = daily.water === i + 1 ? i : i + 1;
+      paintWater();
+      scheduleDailySave();
+    });
+    host.appendChild(b);
+  }
+  paintWater();
+}
+
+function renderDailySupps() {
+  const host = document.getElementById('daily-supps');
+  host.textContent = '';
+  if (!daily.supplements.length) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'None added.';
+    host.appendChild(note);
+    return;
+  }
+  daily.supplements.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'supp-row';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'supp-name';
+    name.placeholder = 'Supplement';
+    name.maxLength = 80;
+    name.setAttribute('list', 'supp-names');
+    name.value = s.name;
+    name.addEventListener('input', () => { s.name = name.value; scheduleDailySave(); });
+    const amt = document.createElement('input');
+    amt.type = 'text';
+    amt.className = 'supp-amt';
+    amt.placeholder = 'Amount';
+    amt.maxLength = 60;
+    amt.value = s.amount;
+    amt.addEventListener('input', () => { s.amount = amt.value; scheduleDailySave(); });
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '✕';
+    del.setAttribute('aria-label', 'Remove supplement');
+    del.addEventListener('click', () => {
+      daily.supplements.splice(i, 1);
+      renderDailySupps();
+      scheduleDailySave();
+    });
+    row.append(name, amt, del);
+    host.appendChild(row);
+  });
+}
+
+function paintSleepHours() {
+  const h = sleepHours(daily.sleep.lights_out, daily.sleep.wake_up);
+  const el = document.getElementById('sleep-hours');
+  if (h === null) { el.textContent = ''; return; }
+  const whole = Math.floor(h);
+  const mins = Math.round((h - whole) * 60);
+  el.textContent = `${whole}h ${mins}m asleep`;
+}
+
+function paintToggleRow(containerId, current) {
+  document.querySelectorAll(`#${containerId} button`).forEach((b) => {
+    b.classList.toggle('on', Number(b.dataset.value) === current);
+  });
+}
+
+function renderDailyToggleRows() {
+  const q = document.getElementById('sleep-quality');
+  q.textContent = '';
+  for (let n = 1; n <= 10; n++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dot-btn';
+    b.dataset.value = String(n);
+    b.textContent = String(n);
+    b.addEventListener('click', () => {
+      daily.sleep.quality = daily.sleep.quality === n ? null : n;
+      paintToggleRow('sleep-quality', daily.sleep.quality);
+      scheduleDailySave();
+    });
+    q.appendChild(b);
+  }
+  const r = document.getElementById('day-rating');
+  r.textContent = '';
+  for (let p = 10; p <= 100; p += 10) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rate-btn';
+    b.dataset.value = String(p);
+    b.textContent = p + '%';
+    b.addEventListener('click', () => {
+      daily.day_rating = daily.day_rating === p ? null : p;
+      paintToggleRow('day-rating', daily.day_rating);
+      scheduleDailySave();
+    });
+    r.appendChild(b);
+  }
+  paintToggleRow('sleep-quality', daily.sleep.quality);
+  paintToggleRow('day-rating', daily.day_rating);
+}
+
+function renderDailyTraining(t) {
+  const el = document.getElementById('daily-training');
+  el.textContent = '';
+  if (!t || !t.totalSets) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'No workout logged this day.';
+    el.appendChild(note);
+    return;
+  }
+  const line = document.createElement('div');
+  line.className = 'daily-train-line';
+  line.textContent =
+    `${t.exercises.length} exercise${t.exercises.length === 1 ? '' : 's'} · ` +
+    `${t.totalSets} set${t.totalSets === 1 ? '' : 's'} · ${t.volume.toLocaleString()} lb moved`;
+  el.appendChild(line);
+  for (const ex of t.exercises) {
+    const row = document.createElement('div');
+    row.className = 'daily-train-ex';
+    const left = document.createElement('span');
+    left.append(ex.name + ' ', muscleTag(ex.muscle_group));
+    const right = document.createElement('span');
+    right.className = 'muted';
+    right.textContent = `${ex.sets} set${ex.sets === 1 ? '' : 's'}`;
+    row.append(left, right);
+    el.appendChild(row);
+  }
+  if (t.notes) {
+    const notes = document.createElement('div');
+    notes.className = 'daily-train-notes';
+    notes.textContent = t.notes;
+    el.appendChild(notes);
+  }
+}
+
+function renderDaily() {
+  document.getElementById('daily-date').value = daily.date;
+  document.getElementById('sleep-out').value = daily.sleep.lights_out;
+  document.getElementById('sleep-wake').value = daily.sleep.wake_up;
+  renderDailyMeals();
+  renderDailyWater();
+  renderDailySupps();
+  renderDailyToggleRows();
+  paintSleepHours();
+}
+
+async function loadDaily(date) {
+  await flushDaily();
+  const token = ++daily.token;
+  const [stored, training, names] = await Promise.all([
+    db.getDailyLog(date),
+    db.getTrainingSummary(date),
+    db.listSupplementNames(),
+  ]);
+  if (token !== daily.token) return; // a newer load superseded this one
+  daily.date = date;
+  Object.assign(daily, dailyStateFromStored(stored));
+  daily.existed = !!stored;
+  daily.pending = false;
+  renderDaily();
+  renderDailyTraining(training);
+  const list = document.getElementById('supp-names');
+  list.textContent = '';
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    list.appendChild(opt);
+  }
+  setDailySaved(stored ? 'Saved ✓' : 'Saves automatically', !!stored);
+}
+
+document.getElementById('daily-date').addEventListener('change', (e) => {
+  if (e.target.value) loadDaily(e.target.value);
+});
+document.getElementById('daily-prev').addEventListener('click', () => loadDaily(shiftDate(daily.date, -1)));
+document.getElementById('daily-next').addEventListener('click', () => loadDaily(shiftDate(daily.date, 1)));
+
+for (const [id, key] of [['sleep-out', 'lights_out'], ['sleep-wake', 'wake_up']]) {
+  document.getElementById(id).addEventListener('input', (e) => {
+    daily.sleep[key] = e.target.value;
+    paintSleepHours();
+    scheduleDailySave();
+  });
+}
+
+document.getElementById('supp-add').addEventListener('click', () => {
+  daily.supplements.push({ name: '', amount: '' });
+  renderDailySupps();
+  const inputs = document.querySelectorAll('#daily-supps .supp-name');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+});
+
+// Pull the previous day's supplements into today's list (skipping any already
+// there), since most people take the same stack every day.
+document.getElementById('supp-copy').addEventListener('click', async () => {
+  const prev = await db.getDailyLog(shiftDate(daily.date, -1));
+  const have = new Set(daily.supplements.map((s) => s.name.trim().toLowerCase()));
+  const toAdd = ((prev && prev.supplements) || []).filter((s) => s.name && !have.has(s.name.toLowerCase()));
+  if (!toAdd.length) {
+    setDailySaved(prev && prev.supplements && prev.supplements.length
+      ? 'Already have yesterday’s supplements.'
+      : 'No supplements logged the day before.');
+    return;
+  }
+  for (const s of toAdd) daily.supplements.push({ name: s.name, amount: s.amount });
+  renderDailySupps();
+  scheduleDailySave();
+});
+
 // ---------- EXPORT tab ----------
 
 document.querySelectorAll('#export-range-presets button').forEach((btn) => {
@@ -1499,10 +1925,12 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
   const bodyWeight = await db.listBodyWeight(range);
   const prHistory = await db.getPRHistory(); // all-time by nature
   const routines = await db.listRoutines();
+  const dailyLogs = toDailyLogsExport(await db.listDailyLogs(range));
   const data = {
     sessions: toJSONExport(sessions),
     bodyWeight: bodyWeight.map((b) => ({ date: b.date, weight: b.weight })),
     routines: toRoutinesExport(routines),
+    dailyLogs,
     prHistory: prHistory
       .filter((h) => h.milestones.length)
       .map((h) => ({ exercise: h.exercise_name, muscle_group: h.muscle_group, milestones: h.milestones })),
@@ -1513,6 +1941,7 @@ document.getElementById('export-json-btn').addEventListener('click', async () =>
     `Copied ${data.sessions.length} session${data.sessions.length === 1 ? '' : 's'}` +
     ` + ${data.bodyWeight.length} body-weight entr${data.bodyWeight.length === 1 ? 'y' : 'ies'}` +
     ` + ${data.routines.length} routine${data.routines.length === 1 ? '' : 's'}` +
+    ` + ${data.dailyLogs.length} daily log${data.dailyLogs.length === 1 ? '' : 's'}` +
     ` + PR history for ${data.prHistory.length} exercise${data.prHistory.length === 1 ? '' : 's'} to clipboard.`;
   try {
     await navigator.clipboard.writeText(json);
@@ -1559,6 +1988,74 @@ document.getElementById('export-pr-history-btn').addEventListener('click', async
   }
 });
 
+// ---------- daily log + training export ----------
+
+async function buildDailyExportDays() {
+  const range = rangeFromWeeks(state.exportRangeWeeks);
+  const [sessions, logs, bodyWeight] = await Promise.all([
+    db.getSessionsForExport(range),
+    db.listDailyLogs(range),
+    db.listBodyWeight(range),
+  ]);
+  return buildDailyAnalysis(sessions, logs, bodyWeight);
+}
+
+document.getElementById('export-daily-json-btn').addEventListener('click', async () => {
+  await flushDaily();
+  const status = document.getElementById('export-daily-status');
+  status.classList.remove('error');
+  try {
+    const days = await buildDailyExportDays();
+    const json = JSON.stringify(toDailyAnalysisJSON(days, new Date().toISOString()), null, 2);
+    const summary = `Copied ${days.length} day${days.length === 1 ? '' : 's'} to clipboard.`;
+    try {
+      await navigator.clipboard.writeText(json);
+      status.textContent = summary;
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = json;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand('copy');
+        status.textContent = summary;
+      } catch {
+        status.classList.add('error');
+        status.textContent = 'Could not copy automatically - use the CSV download instead.';
+      }
+      document.body.removeChild(ta);
+    }
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = 'Could not build the export: ' + err.message;
+  }
+});
+
+document.getElementById('export-daily-csv-btn').addEventListener('click', async () => {
+  await flushDaily();
+  const status = document.getElementById('export-daily-status');
+  status.classList.remove('error');
+  try {
+    const days = await buildDailyExportDays();
+    const blob = new Blob([toDailyCSV(days)], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `forged-daily-log-${todayStr()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    status.textContent = `Downloaded ${days.length} day${days.length === 1 ? '' : 's'}.`;
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = 'Could not build the export: ' + err.message;
+  }
+});
+
 // ---------- backup file download ----------
 
 document.getElementById('backup-json-btn').addEventListener('click', async () => {
@@ -1568,7 +2065,8 @@ document.getElementById('backup-json-btn').addEventListener('click', async () =>
     const sessions = await db.getSessionsForExport(); // no range = all time
     const bodyWeight = await db.listBodyWeight();      // no range = all time
     const routines = await db.listRoutines();
-    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString(), routines);
+    const dailyLogs = await db.listDailyLogs();        // no range = all time
+    const backup = toBackupJSON(sessions, bodyWeight, new Date().toISOString(), routines, dailyLogs);
     const json = JSON.stringify(backup, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1582,8 +2080,10 @@ document.getElementById('backup-json-btn').addEventListener('click', async () =>
     const sCount = backup.sessions.length;
     const bCount = backup.bodyWeight.length;
     const rCount = backup.routines.length;
+    const dCount = backup.dailyLogs.length;
     status.textContent =
       `Saved ${sCount} session${sCount === 1 ? '' : 's'}, ${bCount} body-weight entr${bCount === 1 ? 'y' : 'ies'}` +
+      `${dCount ? `, ${dCount} daily log${dCount === 1 ? '' : 's'}` : ''}` +
       `${rCount ? `, and ${rCount} routine${rCount === 1 ? '' : 's'}` : ''}.`;
   } catch (err) {
     status.classList.add('error');
@@ -1639,6 +2139,7 @@ document.getElementById('import-btn').addEventListener('click', async () => {
   const extras = [];
   if (summary.bodyWeight) extras.push(`${summary.bodyWeight} body-weight entr${summary.bodyWeight === 1 ? 'y' : 'ies'}`);
   if (summary.routines) extras.push(`${summary.routines} routine${summary.routines === 1 ? '' : 's'}`);
+  if (summary.dailyLogs) extras.push(`${summary.dailyLogs} daily log${summary.dailyLogs === 1 ? '' : 's'}`);
   const extraPhrase = extras.length ? ` plus ${extras.join(' and ')}` : '';
   const ok = confirm(
     `Import ${summary.sessions} session${summary.sessions === 1 ? '' : 's'} ` +
@@ -1659,6 +2160,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     if (r.notesFilled) parts.push(`${r.notesFilled} note${r.notesFilled === 1 ? '' : 's'} filled in`);
     if (r.notesSkipped) parts.push(`${r.notesSkipped} existing note${r.notesSkipped === 1 ? '' : 's'} kept`);
     if (r.bodyWeightSkipped) parts.push(`${r.bodyWeightSkipped} body-weight date${r.bodyWeightSkipped === 1 ? '' : 's'} already present`);
+    if (r.dailyLogsAdded) parts.push(`${r.dailyLogsAdded} daily log${r.dailyLogsAdded === 1 ? '' : 's'} added`);
+    if (r.dailyLogsSkipped) parts.push(`${r.dailyLogsSkipped} daily log date${r.dailyLogsSkipped === 1 ? '' : 's'} already present`);
     if (r.routinesAdded) parts.push(`${r.routinesAdded} routine${r.routinesAdded === 1 ? '' : 's'} added`);
     if (r.routinesSkipped) parts.push(`${r.routinesSkipped} routine${r.routinesSkipped === 1 ? '' : 's'} skipped (name already used)`);
     status.textContent = 'Done - ' + parts.join(', ') + '.';
