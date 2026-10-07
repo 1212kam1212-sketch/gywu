@@ -2460,4 +2460,7 @@ if ('serviceWorker' in navigator) {
   await loadRoutines();
   await onExerciseChange();
   await refreshTodaySession(); // also renders the routine strip
+  // Tell the safety net in index.html that startup worked.
+  window.__forgedBooted = true;
+  try { sessionStorage.removeItem('forged-auto-repair'); } catch { /* storage blocked - fine */ }
 })();

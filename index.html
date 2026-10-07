@@ -460,6 +460,62 @@
   <button class="tab-btn" data-view="view-export">Export</button>
 </nav>
 
+<script>
+/* Safety net. If the app fails to start - most often a half-updated cache that
+   mixes old and new files - clear the cached app FILES (never the workout data
+   stored in IndexedDB) and reload once. If it still fails, show a Repair button. */
+(function () {
+  var KEY = 'forged-auto-repair';
+  var handled = false;
+
+  function repair() {
+    var jobs = [];
+    try {
+      if (navigator.serviceWorker) {
+        jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+          return Promise.all(rs.map(function (r) { return r.unregister(); }));
+        }));
+      }
+    } catch (e) {}
+    try {
+      if (window.caches) {
+        jobs.push(caches.keys().then(function (ks) {
+          return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+        }));
+      }
+    } catch (e) {}
+    // Re-download the app files past the browser's HTTP cache, so the reload
+    // below can't pick the stale copies up again.
+    ['./', 'index.html', 'style.css', 'js/app.js', 'js/db.js', 'js/lib.js'].forEach(function (u) {
+      jobs.push(fetch(u, { cache: 'reload' }).catch(function () {}));
+    });
+    return Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+  }
+
+  function banner() {
+    if (document.getElementById('boot-fail') || !document.body) return;
+    var d = document.createElement('div');
+    d.id = 'boot-fail';
+    d.style.cssText = 'position:fixed;left:12px;right:12px;top:12px;z-index:9999;background:#1c1815;' +
+      'border:1px solid #ff1744;border-radius:12px;padding:14px;color:#f2ece4;font:15px sans-serif;text-align:center';
+    d.innerHTML = '<div style="margin-bottom:10px">FORGED did not load properly. Your workout data is safe on this device.</div>' +
+      '<button id="boot-repair" style="background:#ff1744;color:#fff;border:0;border-radius:10px;padding:12px 18px;font-weight:700;font-size:15px">Repair and reload</button>';
+    document.body.appendChild(d);
+    document.getElementById('boot-repair').onclick = repair;
+  }
+
+  function failed() {
+    if (window.__forgedBooted || handled) return;
+    handled = true;
+    var tried = false;
+    try { tried = sessionStorage.getItem(KEY) === '1'; sessionStorage.setItem(KEY, '1'); } catch (e) {}
+    if (tried) banner(); else repair();
+  }
+
+  window.addEventListener('error', function () { setTimeout(failed, 0); });
+  window.addEventListener('load', function () { setTimeout(failed, 10000); });
+})();
+</script>
 <script src="js/app.js" type="module"></script>
 </body>
 </html>

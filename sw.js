@@ -16,7 +16,9 @@
 // already picked up on next load via the network-first fetch strategy above,
 // with no version bump or explicit update prompt needed.
 
-const CACHE_NAME = 'gywu-v1';
+// gywu-v2: bumped so the update clears out any half-updated copies of the app
+// files left in the old cache.
+const CACHE_NAME = 'gywu-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -32,7 +34,11 @@ const ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    // cache: 'reload' skips the browser's HTTP cache (GitHub Pages lets it keep
+    // files for 10 minutes), so the cache is filled with the real latest files.
+    caches.open(CACHE_NAME).then((cache) =>
+      cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' })))
+    )
   );
   // Intentionally no self.skipWaiting() here - the new worker waits until
   // the page asks it to take over (see the SKIP_WAITING message handler),
@@ -50,8 +56,17 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
+  // Same-origin files are revalidated with the server on every load
+  // (cache: 'no-cache'), so the browser's 10-minute HTTP cache can never serve
+  // an old copy of one file next to new copies of the others - that mix of
+  // versions is what can crash the app right after an update.
+  const sameOrigin = new URL(event.request.url).origin === self.location.origin;
+  const network = sameOrigin
+    ? fetch(event.request.url, { cache: 'no-cache' })
+    : fetch(event.request);
+
   event.respondWith(
-    fetch(event.request)
+    network
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
