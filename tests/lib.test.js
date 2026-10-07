@@ -21,6 +21,7 @@ import {
   isDailyLogEmpty,
   sumMeals,
   sleepHours,
+  sleepHoursOf,
   buildDailyAnalysis,
   toDailyAnalysisJSON,
   toDailyCSV,
@@ -524,7 +525,7 @@ const sampleLog = () => ({
   ],
   water: 9,
   supplements: [{ name: 'Creatine', amount: '5g' }, { name: '', amount: '' }],
-  sleep: { lights_out: '23:30', wake_up: '06:45', quality: 7 },
+  sleep: { hours: 7.25, quality: 7 },
   day_rating: 80,
 });
 
@@ -554,7 +555,7 @@ test('normalizeDailyLog: sanitizes junk instead of throwing', () => {
   assert.equal(n.water, 0);
   assert.equal(n.day_rating, 60);            // snapped to nearest 10
   assert.equal(n.sleep.quality, null);       // out of range
-  assert.equal(n.sleep.lights_out, '');
+  assert.equal(n.sleep.hours, null);         // 'late' is not a time -> nothing to convert
   assert.equal(n.meals[0].name, '<img src=x onerror=alert(1)>'); // stored as plain text, rendered via textContent/value
 });
 
@@ -630,7 +631,7 @@ test('toDailyCSV: header + one flattened row per day, with escaping', () => {
   const lines = toDailyCSV(days).trim().split('\n');
   assert.equal(lines.length, 2);
   assert.ok(lines[0].startsWith('date,weekday,trained,'));
-  assert.ok(lines[1].startsWith('2026-10-06,Tue,yes,3,30,2000,Chest/Core,1220,97,140,23,2,152.1,Creatine 5g,23:30,06:45,7.25,7,80,,'));
+  assert.ok(lines[1].startsWith('2026-10-06,Tue,yes,3,30,2000,Chest/Core,1220,97,140,23,2,152.1,Creatine 5g,7.25,7,80,,'));
   assert.ok(lines[1].endsWith('"good, ""heavy"" day"'));
 });
 
@@ -653,8 +654,11 @@ test('parseImportJSON: a malformed daily log is dropped, not fatal', () => {
 });
 
 test('buildDailyAnalysis: a cleared (empty) stored log does not create a day', () => {
-  const empty = { date: '2026-10-05', meals: [], water: 0, supplements: [], sleep: { lights_out: '', wake_up: '', quality: null }, day_rating: null };
+  const empty = { date: '2026-10-05', meals: [], water: 0, supplements: [], sleep: { hours: null, quality: null }, day_rating: null };
   assert.equal(buildDailyAnalysis([], [empty], []).length, 0);
+  // ...and neither does an old-style empty row that still has blank time fields
+  const legacyEmpty = { ...empty, sleep: { lights_out: '', wake_up: '', quality: null } };
+  assert.equal(buildDailyAnalysis([], [legacyEmpty], []).length, 0);
 });
 
 test('waterOz: bottles -> fl oz at 16.9 each, rounded to 1 decimal', () => {
@@ -663,6 +667,40 @@ test('waterOz: bottles -> fl oz at 16.9 each, rounded to 1 decimal', () => {
   assert.equal(waterOz(3), 50.7);
   assert.equal(waterOz(10), 169);
   assert.equal(waterOz(undefined), 0);
+});
+
+// ---------- sleep is just hours ----------
+
+test('sleep: hours are kept, rounded, and validated', () => {
+  assert.equal(normalizeDailyLog({ sleep: { hours: '7.5' } }, '2026-10-06').sleep.hours, 7.5);
+  assert.equal(normalizeDailyLog({ sleep: { hours: 7.25 } }, '2026-10-06').sleep.hours, 7.25); // quarter-hours survive
+  assert.equal(normalizeDailyLog({ sleep: { hours: 7.256 } }, '2026-10-06').sleep.hours, 7.26);
+  assert.equal(normalizeDailyLog({ sleep: { hours: 30 }, water: 1 }, '2026-10-06').sleep.hours, null);
+  assert.equal(normalizeDailyLog({ sleep: { hours: -2 }, water: 1 }, '2026-10-06').sleep.hours, null);
+  assert.equal(normalizeDailyLog({ sleep: { hours: 0 }, water: 1 }, '2026-10-06').sleep.hours, null);
+  assert.equal(normalizeDailyLog({ sleep: { hours: 8 } }, '2026-10-06').date, '2026-10-06'); // hours alone is a real log
+  assert.equal(normalizeDailyLog({ sleep: { hours: 'lots' } }, '2026-10-06'), null);
+});
+
+test('sleep: entries saved with lights-out / wake-up times convert to hours, nothing lost', () => {
+  assert.equal(sleepHoursOf({ lights_out: '23:30', wake_up: '06:45', quality: 7 }), 7.25);
+  assert.equal(sleepHoursOf({ hours: 6, lights_out: '23:30', wake_up: '06:45' }), 6); // explicit hours win
+  assert.equal(sleepHoursOf({ lights_out: '', wake_up: '' }), null);
+  assert.equal(sleepHoursOf(null), null);
+  const n = normalizeDailyLog({ sleep: { lights_out: '23:30', wake_up: '06:45', quality: 7 } }, '2026-10-06');
+  assert.deepEqual(n.sleep, { hours: 7.25, quality: 7 });
+  // an old stored row (raw, never re-saved) still exports with hours
+  const old = { date: '2026-10-06', meals: [], water: 1, supplements: [], sleep: { lights_out: '22:00', wake_up: '06:00', quality: 8 }, day_rating: null };
+  const day = buildDailyAnalysis([], [old], [])[0];
+  assert.deepEqual(day.sleep, { hours: 8, quality_1_to_10: 8 });
+  assert.equal(isDailyLogEmpty({ ...old, water: 0, sleep: { lights_out: '22:00', wake_up: '06:00', quality: null } }), false);
+});
+
+test('sleep: CSV has sleep_hours and no time columns', () => {
+  const days = buildDailyAnalysis([], [normalizeDailyLog(sampleLog(), '2026-10-06')], []);
+  const header = toDailyCSV(days).split('\n')[0].split(',');
+  assert.ok(header.includes('sleep_hours') && header.includes('sleep_quality'));
+  assert.ok(!header.includes('lights_out') && !header.includes('wake_up'));
 });
 
 // ---------- red-team regressions ----------
